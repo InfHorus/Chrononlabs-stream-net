@@ -169,7 +169,7 @@ ChrononLabsStreamNet.SetConfig ("MaximumRetries", 16)
 The library includes a simple console command:
 
 ```txt
-chrononlabsstreamnetstats
+chrononlabs_streamnet_stats
 ```
 
 You can also access stats manually:
