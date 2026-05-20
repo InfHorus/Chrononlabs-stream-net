@@ -239,7 +239,7 @@ The library handles chunking, compression, ACK/NACK, retry, timeout, and final d
 ### Server
 
 ```lua
-util.AddNetworkString ("ForcePlayerSettingsSync") -- Not needed for ChrononLabsStreamNet, just an example of what you no longer need! It is handled automatically
+-- util.AddNetworkString ("ForcePlayerSettingsSync") -- Not needed for ChrononLabsStreamNet, just an example of what you no longer need! It is handled automatically
 
 hook.Add ("PlayerInitialSpawn", "ChrononLabsStreamNetExampleSettings", function (ply)
     timer.Simple (3, function ()
