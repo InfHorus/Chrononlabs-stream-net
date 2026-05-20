@@ -10,7 +10,7 @@
 		ChrononLabsStreamNet.Broadcast(name, ...)            -- server only
 
 	For the full API (SendEx, SendRaw, options, stats, etc...), see the README:
-		https://github.com/InfHorus/Chrononlabs-stream-net
+		https://github.com/InfHorus/Chrononlabs-StreamNet
 ]]
 
 if SERVER then
@@ -1459,7 +1459,7 @@ ChrononLabsStreamNetSend    = library.Send
 ChrononLabsStreamNetReceive = library.Receive
 ChrononLabsStreamNetOn      = library.Receive
 
-hook.Add ("Think", "ChrononLabsStreamNetTick", function ()
+hook.Add ("Tick", "ChrononLabsStreamNetTick", function ()
 	library.Tick ()
 end)
 
@@ -1539,5 +1539,5 @@ end)
 		end)
 
 	For the full API and options, refer always to:
-		https://github.com/InfHorus/Chrononlabs-stream-net
+		https://github.com/InfHorus/Chrononlabs-StreamNet
 ]]
