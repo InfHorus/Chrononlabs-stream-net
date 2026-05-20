@@ -71,6 +71,35 @@ local select       = select
 local assert       = assert
 local error        = error
 
+local IsValid          = IsValid
+local IsEntity         = IsEntity
+local isvector         = isvector
+local isangle          = isangle
+local IsColor          = IsColor
+local Vector           = Vector
+local Angle            = Angle
+local Color            = Color
+local Entity           = Entity
+local NULL             = NULL
+local RealTime         = RealTime
+local playerGetAll     = player and player.GetAll
+local hookAdd          = hook.Add
+local utilCRC          = util.CRC
+local utilCompress     = util.Compress
+local utilDecompress   = util.Decompress
+local netStart         = net.Start
+local netSend          = net.Send
+local netSendToServer  = net.SendToServer
+local netReceive       = net.Receive
+local netWriteUInt     = net.WriteUInt
+local netReadUInt      = net.ReadUInt
+local netWriteBool     = net.WriteBool
+local netReadBool      = net.ReadBool
+local netWriteString   = net.WriteString
+local netReadString    = net.ReadString
+local netWriteData     = net.WriteData
+local netReadData      = net.ReadData
+
 library.Config = library.Config or {}
 local config   = library.Config
 
@@ -154,7 +183,7 @@ local function nextTransferId ()
 end
 
 local function crc (data)
-	return tostring (util.CRC (data or ""))
+	return tostring (utilCRC (data or ""))
 end
 
 local function writeNetUnsigned32 (numberValue)
@@ -163,29 +192,29 @@ local function writeNetUnsigned32 (numberValue)
 	local lowWord  = numberValue % 65536
 	local highWord = mathFloor (numberValue / 65536) % 65536
 
-	net.WriteUInt (lowWord, 16)
-	net.WriteUInt (highWord, 16)
+	netWriteUInt (lowWord, 16)
+	netWriteUInt (highWord, 16)
 end
 
 local function readNetUnsigned32 ()
-	local lowWord  = net.ReadUInt (16)
-	local highWord = net.ReadUInt (16)
+	local lowWord  = netReadUInt (16)
+	local highWord = netReadUInt (16)
 
 	return lowWord + highWord * 65536
 end
 
 local function startPacket (packetKind, unreliable)
-	net.Start (channelName, unreliable == true)
-	net.WriteUInt (packetKind, 4)
-	net.WriteUInt (protocolVersion, 4)
+	netStart (channelName, unreliable == true)
+	netWriteUInt (packetKind, 4)
+	netWriteUInt (protocolVersion, 4)
 end
 
 local function sendCurrentPacket (peer)
 	if SERVER then
 		if not isPlayerValue (peer) then return false end
-		net.Send (peer)
+		netSend (peer)
 	else
-		net.SendToServer ()
+		netSendToServer ()
 	end
 
 	return true
@@ -526,7 +555,7 @@ end
 local function peerFromKey (key)
 	if CLIENT then return nil end
 
-	for playerIndex, ply in ipairs (player.GetAll ()) do
+	for playerIndex, ply in ipairs (playerGetAll ()) do
 		if ply:UserID () == key then
 			return ply
 		end
@@ -621,8 +650,8 @@ local function makeTransfer (name, peer, payloadMode, payload, options)
 		shouldCompress = config.Compress
 	end
 
-	if shouldCompress and rawSize >= (options.CompressAt or config.CompressAt) and util and util.Compress then
-		local compressionOk, compressedPayload = pcall (util.Compress, payload)
+	if shouldCompress and rawSize >= (options.CompressAt or config.CompressAt) and utilCompress then
+		local compressionOk, compressedPayload = pcall (utilCompress, payload)
 
 		if compressionOk and type (compressedPayload) == "string" and #compressedPayload + 16 < #payload then
 			payload    = compressedPayload
@@ -705,7 +734,7 @@ local function sendToTargets (name, target, payloadMode, payload, options)
 	end
 
 	if target == nil or target == true then
-		local players  = player.GetAll ()
+		local players  = playerGetAll ()
 		local ids      = {}
 		local anySent  = false
 		local lastError = nil
@@ -821,7 +850,7 @@ local function sendSequenceList (peer, packetKind, transferId, sequences)
 
 	startPacket (packetKind, false)
 	writeNetUnsigned32 (transferId)
-	net.WriteUInt (#sequences, 8)
+	netWriteUInt (#sequences, 8)
 
 	for sequenceIndex = 1, #sequences do
 		writeNetUnsigned32 (sequences [sequenceIndex])
@@ -833,15 +862,15 @@ end
 local function sendCancel (peer, transferId, reason)
 	startPacket (packetCancel, false)
 	writeNetUnsigned32 (transferId)
-	net.WriteString (tostring (reason or "cancel"))
+	netWriteString (tostring (reason or "cancel"))
 	sendCurrentPacket (peer)
 end
 
 local function sendComplete (peer, transferId, ok, reason)
 	startPacket (packetComplete, false)
 	writeNetUnsigned32 (transferId)
-	net.WriteBool (ok == true)
-	net.WriteString (tostring (reason or ""))
+	netWriteBool (ok == true)
+	netWriteString (tostring (reason or ""))
 	sendCurrentPacket (peer)
 end
 
@@ -907,19 +936,19 @@ local function sendChunk (state, transfer, sequence, retry)
 
 	startPacket 		(packetData, not transfer.ReliableData)
 	writeNetUnsigned32 	(transfer.Id)
-	net.WriteUInt 		(transfer.Mode, 2)
-	net.WriteString 	(transfer.Name)
-	net.WriteBool 		(transfer.Compressed)
+	netWriteUInt 		(transfer.Mode, 2)
+	netWriteString 		(transfer.Name)
+	netWriteBool 		(transfer.Compressed)
 	writeNetUnsigned32 	(transfer.RawSize)
 	writeNetUnsigned32 	(transfer.PackedSize)
 	writeNetUnsigned32 	(transfer.TotalChunks)
 	writeNetUnsigned32 	(sequence)
-	net.WriteString 	(transfer.Checksum)
-	net.WriteString 	(crc (chunk))
-	net.WriteUInt 		(chunkLength, 16)
+	netWriteString 		(transfer.Checksum)
+	netWriteString 		(crc (chunk))
+	netWriteUInt 		(chunkLength, 16)
 
 	if chunkLength > 0 then
-		net.WriteData (chunk, chunkLength)
+		netWriteData (chunk, chunkLength)
 	end
 
 	if sendCurrentPacket (transfer.Peer) then
@@ -1065,12 +1094,12 @@ local function deliverIncoming (peer, bucket, incoming)
 	local payload = packedPayload
 
 	if incoming.Compressed then
-		if not util or not util.Decompress then
+		if not utilDecompress then
 			failIncoming (peer, bucket, incoming.Id, "decompressor unavailable")
 			return
 		end
 
-		local decompressOk, decompressedPayload = pcall (util.Decompress, packedPayload, incoming.RawSize)
+		local decompressOk, decompressedPayload = pcall (utilDecompress, packedPayload, incoming.RawSize)
 
 		if not decompressOk or type (decompressedPayload) ~= "string" then
 			failIncoming (peer, bucket, incoming.Id, "decompression failed")
@@ -1130,20 +1159,20 @@ end
 
 local function onDataPacket (peer)
 	local transferId    = readNetUnsigned32 ()
-	local payloadMode   = net.ReadUInt 		(2)
-	local name          = net.ReadString 	()
-	local compressed    = net.ReadBool 		()
+	local payloadMode   = netReadUInt 		(2)
+	local name          = netReadString 	()
+	local compressed    = netReadBool 		()
 	local rawSize       = readNetUnsigned32 ()
 	local packedSize    = readNetUnsigned32 ()
 	local totalChunks   = readNetUnsigned32 ()
 	local sequence      = readNetUnsigned32 ()
-	local fullChecksum  = net.ReadString 	()
-	local chunkChecksum = net.ReadString 	()
-	local chunkLength   = net.ReadUInt 		(16)
+	local fullChecksum  = netReadString 	()
+	local chunkChecksum = netReadString 	()
+	local chunkLength   = netReadUInt 		(16)
 	local chunk         = ""
 
 	if chunkLength > 0 then
-		chunk = net.ReadData (chunkLength)
+		chunk = netReadData (chunkLength)
 	end
 
 	library.Metrics.ReceivedChunks = library.Metrics.ReceivedChunks + 1
@@ -1215,7 +1244,7 @@ end
 
 local function onAckPacket (peer)
 	local transferId    = readNetUnsigned32 ()
-	local sequenceCount = net.ReadUInt (8)
+	local sequenceCount = netReadUInt (8)
 	local state         = getOutgoingState (peer)
 	local transfer      = state and state.ById [transferId]
 
@@ -1237,7 +1266,7 @@ end
 
 local function onNackPacket (peer)
 	local transferId    = readNetUnsigned32 ()
-	local sequenceCount = net.ReadUInt (8)
+	local sequenceCount = netReadUInt (8)
 	local state         = getOutgoingState (peer)
 	local transfer      = state and state.ById [transferId]
 
@@ -1252,8 +1281,8 @@ end
 
 local function onCompletePacket (peer)
 	local transferId = readNetUnsigned32 ()
-	local ok         = net.ReadBool ()
-	local reason     = net.ReadString ()
+	local ok         = netReadBool ()
+	local reason     = netReadString ()
 	local state      = getOutgoingState (peer)
 	local transfer   = state and state.ById [transferId]
 
@@ -1264,7 +1293,7 @@ end
 
 local function onCancelPacket (peer)
 	local transferId = readNetUnsigned32 ()
-	local reason     = net.ReadString ()
+	local reason     = netReadString ()
 
 	local state    = getOutgoingState (peer)
 	local transfer = state and state.ById [transferId]
@@ -1286,10 +1315,10 @@ local function onReadyPacket (peer)
 	end
 end
 
-net.Receive (channelName, function (length, ply)
+netReceive (channelName, function (length, ply)
 	local peer       = CLIENT and nil or ply
-	local packetKind = net.ReadUInt (4)
-	local version    = net.ReadUInt (4)
+	local packetKind = netReadUInt (4)
+	local version    = netReadUInt (4)
 
 	if version ~= protocolVersion then return end
 
@@ -1484,20 +1513,20 @@ ChrononLabsStreamNetSend    = library.Send
 ChrononLabsStreamNetReceive = library.Receive
 ChrononLabsStreamNetOn      = library.Receive
 
-hook.Add ("Tick", "ChrononLabsStreamNetTick", function ()
+hookAdd ("Tick", "ChrononLabsStreamNetTick", function ()
 	library.Tick ()
 end)
 
 if CLIENT then
-	hook.Add ("InitPostEntity", "ChrononLabsStreamNetReady", function ()
+	hookAdd ("InitPostEntity", "ChrononLabsStreamNetReady", function ()
 		startPacket (packetReady, false)
-		net.WriteUInt (1, 1)
+		netWriteUInt (1, 1)
 		sendCurrentPacket (nil)
 	end)
 end
 
 if SERVER then
-	hook.Add ("PlayerDisconnected", "ChrononLabsStreamNetCleanup", function (ply)
+	hookAdd ("PlayerDisconnected", "ChrononLabsStreamNetCleanup", function (ply)
 		local key = ply:UserID ()
 
 		library.OutgoingStates [key] = nil
