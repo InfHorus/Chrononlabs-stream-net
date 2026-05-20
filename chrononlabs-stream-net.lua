@@ -573,34 +573,6 @@ local function getIncomingBucket (peer)
 	return bucket, key
 end
 
-local function normalizeTargets (target)
-	if CLIENT then return { nil } end
-
-	if target == nil or target == true then
-		return player.GetAll ()
-	end
-
-	if isPlayerValue (target) then
-		return { target }
-	end
-
-	if type (target) == "table" then
-		local targets = {}
-
-		for key, value in pairs (target) do
-			if isPlayerValue (value) then
-				targets [#targets + 1] = value
-			elseif isPlayerValue (key) then
-				targets [#targets + 1] = key
-			end
-		end
-
-		return targets
-	end
-
-	return {}
-end
-
 local function canSendToPeer (peer)
 	if CLIENT then return true end
 	if not isPlayerValue (peer) then return false end
@@ -720,31 +692,84 @@ local function enqueueTransfer (name, target, payloadMode, payload, options)
 end
 
 local function sendToTargets (name, target, payloadMode, payload, options)
-	local targets   = normalizeTargets (target)
-	local ids       = {}
-	local anySent   = false
-	local lastError = nil
+	if CLIENT then
+		local id, result = enqueueTransfer (name, nil, payloadMode, payload, options)
+		if not id then return false, result end
+		return id
+	end
 
-	for targetIndex = 1, #targets do
-		local id, result = enqueueTransfer (name, targets [targetIndex], payloadMode, payload, options)
+	if isPlayerValue (target) then
+		local id, result = enqueueTransfer (name, target, payloadMode, payload, options)
+		if not id then return false, result end
+		return id
+	end
 
-		if id then
-			ids [#ids + 1] = id
-			anySent        = true
-		else
-			lastError = result
+	if target == nil or target == true then
+		local players  = player.GetAll ()
+		local ids      = {}
+		local anySent  = false
+		local lastError = nil
+
+		for playerIndex = 1, #players do
+			local id, result = enqueueTransfer (name, players [playerIndex], payloadMode, payload, options)
+
+			if id then
+				ids [#ids + 1] = id
+				anySent        = true
+			else
+				lastError = result
+			end
 		end
+
+		if not anySent then
+			return false, lastError or "no valid targets"
+		end
+
+		if #ids == 1 then
+			return ids [1]
+		end
+
+		return ids
 	end
 
-	if not anySent then
-		return false, lastError or "no valid targets"
+	if type (target) == "table" then
+		local ids      = {}
+		local anySent  = false
+		local lastError = nil
+
+		for key, value in pairs (target) do
+			local ply = nil
+
+			if isPlayerValue (value) then
+				ply = value
+			elseif isPlayerValue (key) then
+				ply = key
+			end
+
+			if ply then
+				local id, result = enqueueTransfer (name, ply, payloadMode, payload, options)
+
+				if id then
+					ids [#ids + 1] = id
+					anySent        = true
+				else
+					lastError = result
+				end
+			end
+		end
+
+		if not anySent then
+			return false, lastError or "no valid targets"
+		end
+
+		if #ids == 1 then
+			return ids [1]
+		end
+
+		return ids
 	end
 
-	if #ids == 1 then
-		return ids [1]
-	end
-
-	return ids
+	return false, "no valid targets"
 end
 
 local function queueControlPacket (root, peer, transferId, sequence)
