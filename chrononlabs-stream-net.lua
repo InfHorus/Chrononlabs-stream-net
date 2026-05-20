@@ -82,7 +82,7 @@ local Color            = Color
 local Entity           = Entity
 local NULL             = NULL
 local RealTime         = RealTime
-local playerGetAll     = player and player.GetAll
+local playerIterator   = player and player.Iterator
 local hookAdd          = hook.Add
 local utilCRC          = util.CRC
 local utilCompress     = util.Compress
@@ -555,7 +555,7 @@ end
 local function peerFromKey (key)
 	if CLIENT then return nil end
 
-	for playerIndex, ply in ipairs (playerGetAll ()) do
+	for _, ply in playerIterator () do
 		if ply:UserID () == key then
 			return ply
 		end
@@ -734,13 +734,12 @@ local function sendToTargets (name, target, payloadMode, payload, options)
 	end
 
 	if target == nil or target == true then
-		local players  = playerGetAll ()
 		local ids      = {}
 		local anySent  = false
 		local lastError = nil
 
-		for playerIndex = 1, #players do
-			local id, result = enqueueTransfer (name, players [playerIndex], payloadMode, payload, options)
+		for _, ply in playerIterator () do
+			local id, result = enqueueTransfer (name, ply, payloadMode, payload, options)
 
 			if id then
 				ids [#ids + 1] = id
