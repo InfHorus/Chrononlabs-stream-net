@@ -123,19 +123,23 @@ config.NackInterval                    = config.NackInterval or 0.35
 config.AckBatch                        = config.AckBatch or 64
 config.NackBatch                       = config.NackBatch or 64
 config.MaximumPacketsPerThink          = config.MaximumPacketsPerThink or 24
+config.FinishedIncomingTtl             = config.FinishedIncomingTtl or mathMax (config.Timeout, 30)
+config.MaximumFinishedIncomingPerPeer  = config.MaximumFinishedIncomingPerPeer or 256
+config.FinishedControlResendInterval   = config.FinishedControlResendInterval or 0.25
 config.QueueUntilClientReady           = config.QueueUntilClientReady or false
 config.Debug                           = config.Debug or false
 
 channelName = config.ChannelName
 
-library.Handlers       = library.Handlers or {}
-library.OutgoingStates = library.OutgoingStates or {}
-library.IncomingStates = library.IncomingStates or {}
-library.AckPending     = library.AckPending or {}
-library.NackPending    = library.NackPending or {}
-library.ReadyPlayers   = library.ReadyPlayers or {}
-library.NextTransferId = library.NextTransferId or math.random (1, 2147483000)
-library.Metrics        = library.Metrics or {
+library.Handlers         = library.Handlers or {}
+library.OutgoingStates   = library.OutgoingStates or {}
+library.IncomingStates   = library.IncomingStates or {}
+library.FinishedIncoming = library.FinishedIncoming or {}
+library.AckPending       = library.AckPending or {}
+library.NackPending      = library.NackPending or {}
+library.ReadyPlayers     = library.ReadyPlayers or {}
+library.NextTransferId   = library.NextTransferId or math.random (1, 2147483000)
+library.Metrics          = library.Metrics or {
 	SentBytes      = 0,
 	ReceivedBytes  = 0,
 	SentChunks     = 0,
@@ -624,6 +628,92 @@ local function hasAnyEntry (targetTable)
 	return next (targetTable) ~= nil
 end
 
+local function getFinishedIncomingBucket (peer)
+	local key = peerKey (peer)
+	if not key then return nil, nil end
+
+	local bucket = library.FinishedIncoming [key]
+
+	if not bucket then
+		bucket                         = {}
+		library.FinishedIncoming [key] = bucket
+	end
+
+	return bucket, key
+end
+
+local function metadataMatchesFinished (finished, payloadMode, name, compressed, rawSize, packedSize, totalChunks, fullChecksum)
+	return finished.Mode == payloadMode
+		and finished.Name == name
+		and finished.Compressed == compressed
+		and finished.RawSize == rawSize
+		and finished.PackedSize == packedSize
+		and finished.TotalChunks == totalChunks
+		and finished.Checksum == fullChecksum
+end
+
+local function enforceFinishedIncomingCap (bucket)
+	local maximum = tonumber (config.MaximumFinishedIncomingPerPeer) or 0
+
+	if maximum < 1 then
+		for transferId in pairs (bucket) do
+			bucket [transferId] = nil
+		end
+
+		return
+	end
+
+	while countTable (bucket) > maximum do
+		local oldestId
+		local oldestExpiresAt
+
+		for transferId, finished in pairs (bucket) do
+			local expiresAt = finished.ExpiresAt or 0
+
+			if not oldestExpiresAt or expiresAt < oldestExpiresAt then
+				oldestId        = transferId
+				oldestExpiresAt = expiresAt
+			end
+		end
+
+		if not oldestId then
+			break
+		end
+
+		bucket [oldestId] = nil
+	end
+end
+
+local function rememberFinishedIncoming (peer, incoming, ok, reason, currentTime)
+	if not incoming then return nil end
+
+	local bucket = getFinishedIncomingBucket (peer)
+	if not bucket then return nil end
+
+	currentTime = currentTime or now ()
+
+	local finished = {
+		Ok              = ok == true,
+		Reason          = tostring (reason or ""),
+		ExpiresAt       = currentTime + config.FinishedIncomingTtl,
+		LastControlSent = 0,
+		Mode            = incoming.Mode,
+		Name            = incoming.Name,
+		LowerName       = incoming.LowerName,
+		Compressed      = incoming.Compressed,
+		RawSize         = incoming.RawSize,
+		PackedSize      = incoming.PackedSize,
+		TotalChunks     = incoming.TotalChunks,
+		Checksum        = incoming.Checksum
+	}
+
+	bucket [incoming.Id] = finished
+
+	enforceFinishedIncomingCap (bucket)
+
+	return finished
+end
+
 local function safeChunkSize (name, wantedChunkSize)
 	wantedChunkSize = tonumber (wantedChunkSize) or config.ChunkSize
 
@@ -1071,9 +1161,13 @@ local function flushOutgoing (currentTime)
 	end
 end
 
-local function failIncoming (peer, bucket, transferId, reason)
-	bucket [transferId] = nil
-	sendCancel (peer, transferId, reason)
+local function failIncoming (peer, bucket, incoming, reason)
+	if bucket then
+		bucket [incoming.Id] = nil
+	end
+
+	rememberFinishedIncoming (peer, incoming, false, reason)
+	sendCancel (peer, incoming.Id, reason)
 	library.Metrics.Failed = library.Metrics.Failed + 1
 end
 
@@ -1081,12 +1175,12 @@ local function deliverIncoming (peer, bucket, incoming)
 	local packedPayload = tableConcat (incoming.Chunks, "", 1, incoming.TotalChunks)
 
 	if #packedPayload ~= incoming.PackedSize then
-		failIncoming (peer, bucket, incoming.Id, "assembled size mismatch")
+		failIncoming (peer, bucket, incoming, "assembled size mismatch")
 		return
 	end
 
 	if crc (packedPayload) ~= incoming.Checksum then
-		failIncoming (peer, bucket, incoming.Id, "assembled checksum mismatch")
+		failIncoming (peer, bucket, incoming, "assembled checksum mismatch")
 		return
 	end
 
@@ -1094,14 +1188,14 @@ local function deliverIncoming (peer, bucket, incoming)
 
 	if incoming.Compressed then
 		if not utilDecompress then
-			failIncoming (peer, bucket, incoming.Id, "decompressor unavailable")
+			failIncoming (peer, bucket, incoming, "decompressor unavailable")
 			return
 		end
 
 		local decompressOk, decompressedPayload = pcall (utilDecompress, packedPayload, incoming.RawSize)
 
 		if not decompressOk or type (decompressedPayload) ~= "string" then
-			failIncoming (peer, bucket, incoming.Id, "decompression failed")
+			failIncoming (peer, bucket, incoming, "decompression failed")
 			return
 		end
 
@@ -1109,13 +1203,29 @@ local function deliverIncoming (peer, bucket, incoming)
 	end
 
 	if #payload ~= incoming.RawSize then
-		failIncoming (peer, bucket, incoming.Id, "raw size mismatch")
+		failIncoming (peer, bucket, incoming, "raw size mismatch")
 		return
 	end
 
-	bucket [incoming.Id] = nil
-
 	local callback = library.Handlers [incoming.LowerName]
+	local arguments
+	local argumentCount
+
+	if callback then
+		if incoming.Mode ~= modeRaw then
+			local decodeOk
+
+			decodeOk, arguments, argumentCount = pcall (decodeArguments, payload)
+
+			if not decodeOk then
+				failIncoming (peer, bucket, incoming, "decode failed")
+				return
+			end
+		end
+	end
+
+	bucket [incoming.Id] = nil
+	rememberFinishedIncoming (peer, incoming, true, "ok")
 
 	if callback then
 		if incoming.Mode == modeRaw then
@@ -1131,13 +1241,6 @@ local function deliverIncoming (peer, bucket, incoming)
 				ErrorNoHalt ("(ChrononLabs-StreamNet) handler error for " .. incoming.Name .. ": " .. tostring (callbackError) .. "\n")
 			end
 		else
-			local decodeOk, arguments, argumentCount = pcall (decodeArguments, payload)
-
-			if not decodeOk then
-				failIncoming (peer, bucket, incoming.Id, "decode failed")
-				return
-			end
-
 			local callbackOk, callbackError
 
 			if SERVER then
@@ -1157,6 +1260,7 @@ local function deliverIncoming (peer, bucket, incoming)
 end
 
 local function onDataPacket (peer)
+	local currentTime   = now ()
 	local transferId    = readNetUnsigned32 ()
 	local payloadMode   = netReadUInt 		(2)
 	local name          = netReadString 	()
@@ -1189,8 +1293,34 @@ local function onDataPacket (peer)
 		return
 	end
 
-	local bucket = getIncomingBucket (peer)
-	if not bucket then return end
+	local key = peerKey (peer)
+	if not key then return end
+
+	local finishedBucket = library.FinishedIncoming [key]
+	local finished       = finishedBucket and finishedBucket [transferId]
+
+	if finished and metadataMatchesFinished (finished, payloadMode, name, compressed, rawSize, packedSize, totalChunks, fullChecksum) then
+		if finished.Ok then
+			queueAck (peer, transferId, sequence)
+
+			if currentTime - (finished.LastControlSent or 0) >= config.FinishedControlResendInterval then
+				sendComplete (peer, transferId, true, "ok")
+				finished.LastControlSent = currentTime
+			end
+		elseif currentTime - (finished.LastControlSent or 0) >= config.FinishedControlResendInterval then
+			sendCancel (peer, transferId, finished.Reason ~= "" and finished.Reason or "transfer failed")
+			finished.LastControlSent = currentTime
+		end
+
+		return
+	end
+
+	local bucket = library.IncomingStates [key]
+
+	if not bucket then
+		bucket                       = {}
+		library.IncomingStates [key] = bucket
+	end
 
 	local incoming = bucket [transferId]
 
@@ -1213,20 +1343,20 @@ local function onDataPacket (peer)
 			Chunks        = {},
 			Received      = 0,
 			ReceivedBytes = 0,
-			CreatedAt     = now (),
-			UpdatedAt     = now (),
-			NextNack      = now () + config.NackInterval
+			CreatedAt     = currentTime,
+			UpdatedAt     = currentTime,
+			NextNack      = currentTime + config.NackInterval
 		}
 
 		bucket [transferId] = incoming
 	else
 		if incoming.Mode ~= payloadMode or incoming.Name ~= name or incoming.Compressed ~= compressed or incoming.RawSize ~= rawSize or incoming.PackedSize ~= packedSize or incoming.TotalChunks ~= totalChunks or incoming.Checksum ~= fullChecksum then
-			failIncoming (peer, bucket, transferId, "metadata mismatch")
+			failIncoming (peer, bucket, incoming, "metadata mismatch")
 			return
 		end
 	end
 
-	incoming.UpdatedAt = now ()
+	incoming.UpdatedAt = currentTime
 
 	if not incoming.Chunks [sequence] then
 		incoming.Chunks [sequence] = chunk
@@ -1286,6 +1416,17 @@ local function onCompletePacket (peer)
 	local transfer   = state and state.ById [transferId]
 
 	if transfer then
+		if ok then
+			for sequence = 1, transfer.TotalChunks do
+				transfer.Acked [sequence] = true
+			end
+
+			transfer.AckCount       = transfer.TotalChunks
+			transfer.InFlight       = {}
+			transfer.InFlightCount  = 0
+			transfer.LastProgress   = now ()
+		end
+
 		completeTransfer (state, transfer, ok, reason)
 	end
 end
@@ -1304,6 +1445,12 @@ local function onCancelPacket (peer)
 	local bucket = getIncomingBucket (peer)
 
 	if bucket then
+		local incoming = bucket [transferId]
+
+		if incoming then
+			rememberFinishedIncoming (peer, incoming, false, reason ~= "" and reason or "remote cancel")
+		end
+
 		bucket [transferId] = nil
 	end
 end
@@ -1373,7 +1520,7 @@ local function flushIncomingMaintenance (currentTime)
 		else
 			for transferId, incoming in pairs (bucket) do
 				if currentTime - incoming.UpdatedAt > config.Timeout then
-					failIncoming (peer, bucket, transferId, "incoming timeout")
+					failIncoming (peer, bucket, incoming, "incoming timeout")
 				elseif currentTime >= incoming.NextNack and incoming.Received < incoming.TotalChunks then
 					local emitted = 0
 
@@ -1395,6 +1542,29 @@ local function flushIncomingMaintenance (currentTime)
 	end
 end
 
+local function sweepFinishedIncoming (currentTime)
+	for key, bucket in pairs (library.FinishedIncoming) do
+		local peer  = peerFromKey (key)
+		local valid = CLIENT or isPlayerValue (peer)
+
+		if not valid then
+			library.FinishedIncoming [key] = nil
+		else
+			for transferId, finished in pairs (bucket) do
+				if currentTime >= finished.ExpiresAt then
+					bucket [transferId] = nil
+				end
+			end
+
+			enforceFinishedIncomingCap (bucket)
+
+			if not hasAnyEntry (bucket) then
+				library.FinishedIncoming [key] = nil
+			end
+		end
+	end
+end
+
 local nextControlFlush = 0
 
 function library.Tick ()
@@ -1402,6 +1572,7 @@ function library.Tick ()
 
 	flushOutgoing (currentTime)
 	flushIncomingMaintenance (currentTime)
+	sweepFinishedIncoming (currentTime)
 
 	if currentTime >= nextControlFlush then
 		flushControlRoot (library.AckPending, packetAck, config.AckBatch)
@@ -1528,11 +1699,12 @@ if SERVER then
 	hookAdd ("PlayerDisconnected", "ChrononLabsStreamNetCleanup", function (ply)
 		local key = ply:UserID ()
 
-		library.OutgoingStates [key] = nil
-		library.IncomingStates [key] = nil
-		library.AckPending [key]     = nil
-		library.NackPending [key]    = nil
-		library.ReadyPlayers [key]   = nil
+		library.OutgoingStates [key]   = nil
+		library.IncomingStates [key]   = nil
+		library.FinishedIncoming [key] = nil
+		library.AckPending [key]       = nil
+		library.NackPending [key]      = nil
+		library.ReadyPlayers [key]     = nil
 	end)
 end
 

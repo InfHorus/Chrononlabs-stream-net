@@ -598,6 +598,9 @@ ChrononLabsStreamNet.SetConfig ("NackInterval", 0.35)
 ChrononLabsStreamNet.SetConfig ("AckBatch", 64)
 ChrononLabsStreamNet.SetConfig ("NackBatch", 64)
 ChrononLabsStreamNet.SetConfig ("MaximumPacketsPerThink", 24)
+ChrononLabsStreamNet.SetConfig ("FinishedIncomingTtl", 30)
+ChrononLabsStreamNet.SetConfig ("MaximumFinishedIncomingPerPeer", 256)
+ChrononLabsStreamNet.SetConfig ("FinishedControlResendInterval", 0.25)
 ChrononLabsStreamNet.SetConfig ("QueueUntilClientReady", false)
 ChrononLabsStreamNet.SetConfig ("Debug", false)
 ```
@@ -676,6 +679,8 @@ The flow is automatic:
 8. Receiver calls your `Receive` callback.
 9. Receiver sends final completion confirmation.
 10. Sender calls `OnComplete`.
+
+Finished incoming transfers are remembered for a short time. This lets the receiver ignore late duplicate chunks without calling your callback again, while still answering the sender with the right completion or cancel message.
 
 If this cannot complete before the timeout or retry limit, the transfer fails properly in an 'expected way' that you can handle.
 Contributions are welcomed of course;
