@@ -133,15 +133,17 @@ config.Debug                           = config.Debug or false
 
 channelName = config.ChannelName
 
-library.Handlers         = library.Handlers or {}
-library.OutgoingStates   = library.OutgoingStates or {}
-library.IncomingStates   = library.IncomingStates or {}
-library.FinishedIncoming = library.FinishedIncoming or {}
-library.AckPending       = library.AckPending or {}
-library.NackPending      = library.NackPending or {}
-library.ReadyPlayers     = library.ReadyPlayers or {}
-library.NextTransferId   = library.NextTransferId or math.random (1, 2147483000)
-library.Metrics          = library.Metrics or {
+library.Handlers           = library.Handlers or {}
+library.ReceivePolicies    = library.ReceivePolicies or {}
+library.ReceivePolicyState = library.ReceivePolicyState or {}
+library.OutgoingStates     = library.OutgoingStates or {}
+library.IncomingStates     = library.IncomingStates or {}
+library.FinishedIncoming   = library.FinishedIncoming or {}
+library.AckPending         = library.AckPending or {}
+library.NackPending        = library.NackPending or {}
+library.ReadyPlayers       = library.ReadyPlayers or {}
+library.NextTransferId     = library.NextTransferId or math.random (1, 2147483000)
+library.Metrics            = library.Metrics or {
 	SentBytes      = 0,
 	ReceivedBytes  = 0,
 	SentChunks     = 0,
@@ -723,6 +725,47 @@ local function rememberFinishedIncoming (peer, incoming, ok, reason, currentTime
 	return finished
 end
 
+local function countIncomingByName (bucket, messageLowerName)
+	local count = 0
+
+	for transferId, incoming in pairs (bucket) do
+		if incoming.LowerName == messageLowerName then
+			count = count + 1
+		end
+	end
+
+	return count
+end
+
+local function policyCooldownActive (key, messageLowerName, policy, currentTime)
+	if not policy.Cooldown then return false end
+
+	local stateForPeer = library.ReceivePolicyState [key]
+	local entry        = stateForPeer and stateForPeer [messageLowerName]
+
+	return entry and currentTime - entry.LastAcceptedAt < policy.Cooldown
+end
+
+local function recordPolicyAccepted (key, messageLowerName, policy, currentTime)
+	if not policy.Cooldown then return end
+
+	local stateForPeer = library.ReceivePolicyState [key]
+
+	if not stateForPeer then
+		stateForPeer                    = {}
+		library.ReceivePolicyState [key] = stateForPeer
+	end
+
+	local entry = stateForPeer [messageLowerName]
+
+	if not entry then
+		entry                           = {}
+		stateForPeer [messageLowerName] = entry
+	end
+
+	entry.LastAcceptedAt = currentTime
+end
+
 local function safeChunkSize (name, wantedChunkSize)
 	wantedChunkSize = tonumber (wantedChunkSize) or config.ChunkSize
 
@@ -750,6 +793,51 @@ local function parsePriority (priority)
 	end
 
 	return nil, "(ChrononLabs-StreamNet): Invalid priority. Use high, normal, low, or default."
+end
+
+local function normalizeReceivePolicy (policy)
+	if policy == nil then
+		return {}
+	end
+
+	assert (type (policy) == "table", "(ChrononLabs-StreamNet): Receive policy must be a table. Pass a policy table or a callback function.")
+
+	local direction = lowerName (policy.Direction or policy.direction or "any")
+
+	assert (
+		direction == "any" or direction == "client_to_server" or direction == "server_to_client",
+		"(ChrononLabs-StreamNet): Receive policy Direction is invalid. Use any, client_to_server, or server_to_client."
+	)
+
+	local maxBytes = policy.MaxBytes or policy.maxBytes
+
+	if maxBytes ~= nil then
+		maxBytes = tonumber (maxBytes)
+		assert (maxBytes and maxBytes > 0, "(ChrononLabs-StreamNet): Receive policy MaxBytes is invalid. Use a positive number.")
+	end
+
+	local maxInFlight = policy.MaxInFlight or policy.maxInFlight
+
+	if maxInFlight ~= nil then
+		maxInFlight = tonumber (maxInFlight)
+		assert (maxInFlight and maxInFlight >= 1, "(ChrononLabs-StreamNet): Receive policy MaxInFlight is invalid. Use a positive integer.")
+		maxInFlight = mathFloor (maxInFlight)
+	end
+
+	local cooldown = policy.Cooldown or policy.cooldown
+
+	if cooldown ~= nil then
+		cooldown = tonumber (cooldown)
+		assert (cooldown and cooldown >= 0, "(ChrononLabs-StreamNet): Receive policy Cooldown is invalid. Use zero or a positive number.")
+	end
+
+	return {
+		Direction    = direction,
+		MaxBytes     = maxBytes,
+		MaxInFlight  = maxInFlight,
+		Cooldown     = cooldown,
+		RequireReady = policy.RequireReady == true or policy.requireReady == true
+	}
 end
 
 local function makeTransfer (name, peer, payloadMode, payload, options)
@@ -1408,6 +1496,8 @@ local function onDataPacket (peer)
 		return
 	end
 
+	local messageLowerName = lowerName (name)
+	local policy           = library.ReceivePolicies [messageLowerName]
 	local bucket = library.IncomingStates [key]
 
 	if not bucket then
@@ -1423,11 +1513,38 @@ local function onDataPacket (peer)
 			return
 		end
 
+		if policy then
+			if (SERVER and policy.Direction == "server_to_client") or (CLIENT and policy.Direction == "client_to_server") then
+				sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy direction rejected this transfer. Verify the message Direction matches the sender side.")
+				return
+			end
+
+			if SERVER and policy.RequireReady and isPlayerValue (peer) and library.ReadyPlayers [peer:UserID ()] ~= true then
+				sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy requires the client to be ready. Wait until the client finishes joining before sending.")
+				return
+			end
+
+			if policy.MaxBytes and rawSize > policy.MaxBytes then
+				sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy byte limit exceeded. Increase MaxBytes or send less data.")
+				return
+			end
+
+			if policy.MaxInFlight and countIncomingByName (bucket, messageLowerName) >= policy.MaxInFlight then
+				sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy in-flight limit exceeded. Increase MaxInFlight or wait for the previous transfer to finish.")
+				return
+			end
+
+			if policyCooldownActive (key, messageLowerName, policy, currentTime) then
+				sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy cooldown active. Wait before sending this message again.")
+				return
+			end
+		end
+
 		incoming = {
 			Id            = transferId,
 			Mode          = payloadMode,
 			Name          = name,
-			LowerName     = lowerName (name),
+			LowerName     = messageLowerName,
 			Compressed    = compressed,
 			RawSize       = rawSize,
 			PackedSize    = packedSize,
@@ -1442,6 +1559,7 @@ local function onDataPacket (peer)
 		}
 
 		bucket [transferId] = incoming
+		recordPolicyAccepted (key, messageLowerName, policy or {}, currentTime)
 	else
 		if incoming.Mode ~= payloadMode or incoming.Name ~= name or incoming.Compressed ~= compressed or incoming.RawSize ~= rawSize or incoming.PackedSize ~= packedSize or incoming.TotalChunks ~= totalChunks or incoming.Checksum ~= fullChecksum then
 			failIncoming (peer, bucket, incoming, "(ChrononLabs-StreamNet): Metadata mismatch. Make sure transfer IDs are not reused with different metadata.")
@@ -1693,11 +1811,29 @@ local function findOutgoingTransfer (transferId, peer)
 	return nil, state
 end
 
-function library.Receive (name, callback)
+function library.Receive (name, policyOrCallback, maybeCallback)
 	assert (type (name) == "string", "(ChrononLabs-StreamNet): Receive name must be a string. Pass the registered message name as the first argument.")
+
+	local policy
+	local callback
+
+	if type (policyOrCallback) == "function" and maybeCallback == nil then
+		callback = policyOrCallback
+		policy   = nil
+	elseif policyOrCallback == nil and type (maybeCallback) == "function" then
+		callback = maybeCallback
+		policy   = nil
+	else
+		policy   = normalizeReceivePolicy (policyOrCallback)
+		callback = maybeCallback
+	end
+
 	assert (type (callback) == "function", "(ChrononLabs-StreamNet): Receive callback must be a function. Pass a function as the second argument.")
 
-	library.Handlers [lowerName (name)] = callback
+	local messageLowerName = lowerName (name)
+
+	library.Handlers [messageLowerName]        = callback
+	library.ReceivePolicies [messageLowerName] = policy
 
 	return library
 end
@@ -1885,6 +2021,7 @@ if SERVER then
 		library.OutgoingStates [key]   = nil
 		library.IncomingStates [key]   = nil
 		library.FinishedIncoming [key] = nil
+		library.ReceivePolicyState [key] = nil
 		library.AckPending [key]       = nil
 		library.NackPending [key]      = nil
 		library.ReadyPlayers [key]     = nil

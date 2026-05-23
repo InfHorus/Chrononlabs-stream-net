@@ -1,6 +1,6 @@
-# ChrononLabsStreamNet
+# ChrononLabsStreamNet - Fast and Reliable Garry's Mod Networking
 
-ChrononLabsStreamNet is a single-file streaming networking library for Garry's Mod.
+ChrononLabsStreamNet is a lightweight, optimized, single-file streaming networking library for Garry's Mod.
 
 It is designed to make networking cleaner, safer, and more reliable across all kinds of projects. You can use it for simple addon messages, structured data sync, raw binary transfers, or very large payloads that would normally be painful to handle with the default `net` library.
 
@@ -42,6 +42,12 @@ Instead of manually writing your own chunking system every time, you get one uni
 - Runtime stats with `GetStats` and `chrononlabs_streamnet_stats`.
 - Optional client-ready queueing with `QueueUntilClientReady`.
 - Helpful error messages that include short fixes when something is misconfigured.
+- Optional receive policies for per-message safety limits.
+- Receive `Direction` policies: `any`, `client_to_server`, or `server_to_client`.
+- Receive `MaxBytes` policies to cap the original payload size before compression.
+- Receive `MaxInFlight` policies to limit active incoming transfers per peer and message.
+- Receive `Cooldown` policies to limit how often one peer can start the same message.
+- Receive `RequireReady` policies to wait until a joining client has sent the internal ready signal.
 - Useful for basic addons, advanced systems, admin tools, anticheat systems, AI telemetry, save systems, and file-like transfers.
 
 ## Delivery model
@@ -85,6 +91,30 @@ end)
 
 ChrononLabsStreamNet.Send ("ClientHello", "Hello from the client")
 ```
+
+## Receive policy
+
+`Receive` can also take an optional policy table before the callback. This is useful when one message needs stricter limits than the global defaults.
+
+```lua
+ChrononLabsStreamNet.Receive ("UploadAvatar", {
+    Direction = "client_to_server",
+    MaxBytes = 256 * 1024,
+    MaxInFlight = 1,
+    Cooldown = 5,
+    RequireReady = true
+}, function (ply, data)
+    print ("Avatar upload:", ply, #data)
+end)
+```
+
+All receive policy fields are optional.
+
+- `Direction` can be `any`, `client_to_server`, or `server_to_client`.
+- `MaxBytes` limits the original payload size before compression.
+- `MaxInFlight` limits active incoming transfers for that message per peer.
+- `Cooldown` limits how often that message can be accepted per peer.
+- `RequireReady` makes the server wait until the client has finished joining before accepting that message.
 
 ## Sending tables
 
