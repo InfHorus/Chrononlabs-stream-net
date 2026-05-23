@@ -550,6 +550,10 @@ local function decodeArguments (data)
 		arguments [argumentIndex] = readValue (reader, 0)
 	end
 
+	if reader.Position <= reader.Length then
+		error ("(ChrononLabs-StreamNet): Decode trailing bytes after arguments. Check for corrupted payloads or mismatched library versions.")
+	end
+
 	return arguments, argumentCount
 end
 
