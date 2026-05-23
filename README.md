@@ -1,6 +1,6 @@
-# ChrononLabsStreamNet - Fast and Reliable Garry's Mod Networking
+# ChrononLabs-StreamNet: Fast and Reliable Garry's Mod Networking
 
-ChrononLabsStreamNet is a lightweight, optimized, single-file streaming networking library for Garry's Mod.
+ChrononLabs-StreamNet is a lightweight, optimized, single-file streaming networking library for Garry's Mod.
 
 It is designed to make networking cleaner, safer, and more reliable across all kinds of projects. You can use it for simple addon messages, structured data sync, raw binary transfers, or very large payloads that would normally be painful to handle with the default `net` library.
 
@@ -10,11 +10,15 @@ It is not only useful for large payloads. It can also be used as a better organi
 
 Garry's Mod networking is fine for small one off messages, but it gets painful when an addon needs larger data, safer client messages, progress tracking, retries, or cleaner control over how data is sent.
 
-The normal net system has a practical message limit around 64 KB. ChrononLabsStreamNet uses streamed chunks, so the default payload limit is 8 MB and can be changed for trusted use cases. It also paces the transfer, checks the data, retries missing chunks, and rebuilds the full payload before your callback runs.
+The normal net system has a practical message limit around 64 KB. ChrononLabs-StreamNet uses streamed chunks, so the default payload limit is 8 MB and can be changed for trusted use cases. It also paces the transfer, checks the data, retries missing chunks, and rebuilds the full payload before your callback runs.
 
 This is useful for inventory data, save data, debug dumps, admin tools, UI state, generated cache data, raw binary data, and other addon systems where normal net messages start to feel too limited or messy.
 
 It is not just about large payloads either. The library also gives you receive policies, priority, compression, progress callbacks, cancellation, timeout handling, stats, and one simple API for both client to server and server to client messages.
+
+Those features also help keep your server networking under control. Direction policies, `MaxBytes`, `MaxInFlight`, cooldowns, ready checks, checksums, retries, timeouts, and duplicate protection all reduce common mistakes and abuse cases like spam, oversized payloads, corrupted chunks, repeated sends, and wrong way messages.
+
+This does not replace an anticheat, permission checks, or normal server side validation. You still need to check what the client is allowed to do. ChrononLabs-StreamNet just gives you a safer base to build that networking on.
 
 Instead of writing a custom chunking and retry system in every project, you get one shared layer that handles the transport work and lets your addon code focus on the data it actually wants to send.
 
@@ -58,7 +62,7 @@ Instead of writing a custom chunking and retry system in every project, you get 
 
 ## Delivery model
 
-ChrononLabsStreamNet provides guaranteed complete delivery semantics.
+ChrononLabs-StreamNet provides guaranteed complete delivery semantics.
 
 A message is only delivered to your callback once the full payload has been received, validated, assembled, and decompressed if needed.
 
@@ -359,7 +363,7 @@ Use priority when one transfer should move ahead of other queued sends for the s
 
 ## Example use cases
 
-ChrononLabsStreamNet can be used for:
+ChrononLabs-StreamNet can be used for:
 
 - Addon configuration sync
 - Inventory systems
@@ -380,15 +384,15 @@ ChrononLabsStreamNet can be used for:
 
 Do not trust client data just because the transport succeeded!!
 
-ChrononLabsStreamNet improves delivery, pacing, recovery, and structure. It does not replace server-side validation, permission checks, sanity checks, or anticheat logic.
+ChrononLabs-StreamNet improves delivery, pacing, recovery, and structure. It does not replace server-side validation, permission checks, sanity checks, or anticheat logic.
 
 For client to server messages, always validate that the player is allowed to send the data they are sending as well as the payload sent!
 
 ## Notes
 
-ChrononLabsStreamNet is meant to be a practical general-purpose networking layer.
+ChrononLabs-StreamNet is meant to be a practical general-purpose networking layer.
 
-For tiny one-off messages, the default Garry's Mod `net` library is still fine. ChrononLabsStreamNet becomes useful when you want cleaner structure, better reliability, larger transfers, recovery logic, or a unified API across your project.
+For tiny one-off messages, the default Garry's Mod `net` library is still fine. ChrononLabs-StreamNet becomes useful when you want cleaner structure, better reliability, larger transfers, recovery logic, or a unified API across your project.
 
 ## License
 
@@ -396,16 +400,16 @@ This project is licensed under the MIT License.
 
 You may use, modify, distribute, and include it in your own projects, including commercial addons, as long as the original copyright and license notice are preserved.
 
-If the file is renamed, merged, or implemented directly inside another addon, please keep clear credit to ChrononLabsStreamNet / ChrononLabs in the source or documentation.
+If the file is renamed, merged, or implemented directly inside another addon, please keep clear credit to ChrononLabs-StreamNet / ChrononLabs in the source or documentation.
 
 
 
 # ChrononLabs-StreamNet Bonus examples (skip if you don't need, mostly for people that plans using it into big project / where fine-control is required)
 
-These are extra examples for ChrononLabsStreamNet, they cover normal usage, large sanitized table streaming, raw transfers, completion callbacks, ACK/NACK behavior, retry settings, timeout settings, and the full options table.
+These are extra examples for ChrononLabs-StreamNet, they cover normal usage, large sanitized table streaming, raw transfers, completion callbacks, ACK/NACK behavior, retry settings, timeout settings, and the full options table.
 
 Important:
-ChrononLabsStreamNet can serialize normal Lua values, tables, numbers, strings, booleans, vectors, angles, colors, and entities. (It cannot serialize functions!!)
+ChrononLabs-StreamNet can serialize normal Lua values, tables, numbers, strings, booleans, vectors, angles, colors, and entities. (It cannot serialize functions!!)
 
 So if you want to send something like `hook.GetTable ()` or `concommand.GetTable ()`, you must sanitize it first, because those tables contain functions.
 
@@ -418,7 +422,7 @@ The library handles chunking, compression, ACK/NACK, retry, timeout, and final d
 ### Server
 
 ```lua
--- util.AddNetworkString ("ForcePlayerSettingsSync") -- Not needed for ChrononLabsStreamNet, just an example of what you no longer need! It is handled automatically
+-- util.AddNetworkString ("ForcePlayerSettingsSync") -- Not needed for ChrononLabs-StreamNet, just an example of what you no longer need! It is handled automatically
 
 hook.Add ("PlayerInitialSpawn", "ChrononLabsStreamNetExampleSettings", function (ply)
     timer.Simple (3, function ()
@@ -806,7 +810,7 @@ concommand.Add ("clsnet_bonus_send_big", function (ply)
     if SERVER and IsValid (ply) then return end
 
     for _, target in ipairs (player.GetAll ()) do
-        local payload = string.rep ("ChrononLabsStreamNet bonus payload\n", 50000)
+        local payload = string.rep ("ChrononLabs-StreamNet bonus payload\n", 50000)
 
         ChrononLabsStreamNet.SendRaw ("ExampleBonusBigPayload", target, payload, {
             ChunkSize = 16384,
@@ -877,5 +881,8 @@ The flow is automatic:
 Finished incoming transfers are remembered for a short time. This lets the receiver ignore late duplicate chunks without calling your callback again, while still answering the sender with the right completion or cancel message.
 
 If this cannot complete before the timeout or retry limit, the transfer fails properly in an 'expected way' that you can handle.
-Contributions are welcomed of course;
+
+## Contributions
+
+Contributions are welcome of course. Bug reports, fixes, examples, docs improvements, and real world test cases are all useful;
 
