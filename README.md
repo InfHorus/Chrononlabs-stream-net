@@ -14,26 +14,35 @@ Instead of manually writing your own chunking system every time, you get one uni
 
 ## Main advantages
 
-- Single-file library
-- Simple unified API
-- Works client to server and server to client
-- Suitable for both small and large messages
-- More structured than manually managing `net.Start`, `net.Write*`, and `net.Receive`
-- Automatic chunking for large payloads
-- Per-peer pacing to reduce net buffer pressure
-- Optional compression using `util.Compress`
-- ACK and NACK recovery system
-- Automatic retry of missing chunks
-- Transfer priority for high, normal, and low priority sends
-- Transfer timeout handling
-- Full payload validation before delivery
-- Checksum validation for chunks and complete transfers
-- Duplicate delivery protection for late retry packets
-- Completion callbacks
-- Progress callbacks for outgoing transfers
-- Outgoing transfer lookup and cancellation
-- Raw binary streaming mode
-- Useful for basic addons, advanced systems, admin tools, anticheat systems, AI telemetry, save systems, and file-like transfers
+- Single-file library that can live in one shared autorun file.
+- Unified API with `Receive`, `Send`, `SendEx`, `SendRaw`, and `Broadcast`.
+- Two-way networking for client to server and server to client messages.
+- Works for small addon messages, large payloads, and file-like transfers.
+- Cleaner structure than manually managing `net.Start`, `net.Write*`, and `net.Receive`.
+- Automatic payload chunking for messages that exceed normal net comfort limits.
+- Per-peer pacing with `BytesPerSecond`, `BurstBytes`, `Window`, and `MaximumPacketsPerThink`.
+- Transfer priority with `Priority = "high"`, `Priority = "normal"`, and `Priority = "low"`.
+- Priority aging with `PriorityAgingInterval` so lower priority transfers still get chances to send.
+- Optional compression with `util.Compress` and `CompressAt`.
+- Raw binary streaming with `SendRaw` when you already have your own encoded format.
+- Structured argument serialization for nil, booleans, numbers, strings, tables, Vector, Angle, Color, and Entity values.
+- Serializer safety limits with `MaximumTablePairs` and `MaximumTableDepth`.
+- Payload size protection with `MaximumPayloadBytes` and safe chunk sizing.
+- ACK/NACK recovery, where received chunks are confirmed, and missing or corrupted chunks are requested again.
+- Automatic retry with `RetryInterval` and `MaximumRetries`.
+- Transfer timeout handling with `Timeout`.
+- Full payload validation before delivery.
+- Chunk and complete-payload checksum validation.
+- Duplicate delivery protection for late retry packets.
+- Finished-transfer memory with `FinishedIncomingTtl` to ignore late duplicates safely.
+- Completion callbacks with `OnComplete`.
+- Progress callbacks for outgoing transfers with `OnProgress` and `ProgressInterval`.
+- Outgoing transfer lookup with `GetTransfer` and `GetTransfers`.
+- Outgoing transfer cancellation with `Cancel`.
+- Runtime stats with `GetStats` and `chrononlabs_streamnet_stats`.
+- Optional client-ready queueing with `QueueUntilClientReady`.
+- Helpful error messages that include short fixes when something is misconfigured.
+- Useful for basic addons, advanced systems, admin tools, anticheat systems, AI telemetry, save systems, and file-like transfers.
 
 ## Delivery model
 
