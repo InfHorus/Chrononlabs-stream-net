@@ -92,6 +92,87 @@ end)
 ChrononLabsStreamNet.Send ("ClientHello", "Hello from the client")
 ```
 
+## Recommended patterns
+
+These examples show how the newer safety and control features fit together in normal addon code.
+
+### Safe client upload
+
+Use a receive policy for messages that come from clients. The transport can prove the payload arrived, but your server still has to decide if the player is allowed to send it.
+
+```lua
+ChrononLabsStreamNet.Receive ("AvatarUpload", {
+    Direction = "client_to_server",
+    MaxBytes = 256 * 1024,
+    MaxInFlight = 1,
+    Cooldown = 5,
+    RequireReady = true
+}, function (ply, bytes)
+    if not ply:IsAdmin () then
+        return
+    end
+
+    print ("Avatar upload from", ply, "bytes:", #bytes)
+end)
+```
+
+### Priority with a real use
+
+Use high priority for data the player is waiting on right now, like menu state. Use low priority for work that can wait, like debug dumps or cache data.
+
+```lua
+ChrononLabsStreamNet.SendEx ("MenuState", ply, {
+    Priority = "high",
+    Compress = true
+}, menuState)
+
+ChrononLabsStreamNet.SendRaw ("DebugDump", ply, debugJson, {
+    Priority = "low",
+    Compress = true
+})
+```
+
+Try not to mark every large transfer as high priority. If everything is high priority, nothing really is!
+
+### Large transfer with progress
+
+This is a good base pattern for file like data, large JSON, generated cache data, or admin tools.
+
+```lua
+local transferId = ChrononLabsStreamNet.SendRaw ("MapCache", ply, cacheBytes, {
+    Priority = "normal",
+    Compress = true,
+    ChunkSize = 16384,
+    BytesPerSecond = 128 * 1024,
+    Window = 8,
+    ProgressInterval = 0.25,
+    OnProgress = function (transfer)
+        print ("Map cache progress:", transfer.AckCount .. "/" .. transfer.TotalChunks)
+    end,
+    OnComplete = function (ok, reason, transfer)
+        print ("Map cache finished:", ok, reason)
+    end
+})
+
+if not transferId then
+    print ("Map cache could not start")
+end
+```
+
+### Which call to use
+
+Use `Send` for small structured messages.
+
+Use `SendEx` when you want options like priority, compression, progress, timeout, or custom pacing.
+
+Use `SendRaw` when you already have bytes, JSON, compressed data, file data, or your own encoded format.
+
+Use `Broadcast` when the server sends the same structured message to every player.
+
+Use a receive policy when the message needs safety limits.
+
+Use `OnProgress` with `Cancel` when a transfer should be shown in a UI or stopped by the user.
+
 ## Receive policy
 
 `Receive` can also take an optional policy table before the callback. This is useful when one message needs stricter limits than the global defaults.
