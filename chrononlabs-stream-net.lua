@@ -57,8 +57,6 @@ local stringFormat = string.format
 local stringLower  = string.lower
 local stringSub    = string.sub
 local tableConcat  = table.concat
-local tableInsert  = table.insert
-local tableRemove  = table.remove
 local tableSort    = table.sort
 local tableUnpack  = unpack
 local type         = type
@@ -1302,16 +1300,20 @@ local function flushOutgoing (currentTime)
 			state.LastTick  = currentTime
 			state.Budget    = mathMin (config.BurstBytes, (state.Budget or 0) + config.BytesPerSecond * mathMax (0, deltaTime))
 
-			local transferIndex = 1
+			local writeIndex  = 1
+			local queueLength = #state.Queue
 
-			while transferIndex <= #state.Queue do
-				local transfer = state.Queue [transferIndex]
+			for readIndex = 1, queueLength do
+				local transfer = state.Queue [readIndex]
 
-				if transfer.Done then
-					tableRemove (state.Queue, transferIndex)
-				else
-					transferIndex = transferIndex + 1
+				if not transfer.Done then
+					state.Queue [writeIndex] = transfer
+					writeIndex = writeIndex + 1
 				end
+			end
+
+			for clearIndex = queueLength, writeIndex, -1 do
+				state.Queue [clearIndex] = nil
 			end
 
 			local activeTransfers = {}
