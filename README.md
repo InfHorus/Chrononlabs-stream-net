@@ -313,7 +313,7 @@ If the file is renamed, merged, or implemented directly inside another addon, pl
 
 
 
-# ChrononLabs-Stream-Net Bonus examples (skip if you don't care, mostly for people that plans using it into big project / where fine-control is required)
+# ChrononLabs-StreamNet Bonus examples (skip if you don't need, mostly for people that plans using it into big project / where fine-control is required)
 
 These are extra examples for ChrononLabsStreamNet, they cover normal usage, large sanitized table streaming, raw transfers, completion callbacks, ACK/NACK behavior, retry settings, timeout settings, and the full options table.
 
