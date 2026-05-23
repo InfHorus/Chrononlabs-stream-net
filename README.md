@@ -355,7 +355,7 @@ hook.Add ("PlayerInitialSpawn", "ChrononLabsStreamNetExampleSettings", function 
         ChrononLabsStreamNet.SendEx ("ExampleSettingsSync", ply, {
             ChunkSize = 16384,
             Compress = true,
-            CompressAt = 1024,
+            CompressAt = 8192,
             RetryInterval = 0.75,
             Timeout = 20,
             MaximumRetries = 16,
@@ -610,7 +610,7 @@ local options = {
     Compress = true,
 
     -- Only compress when the original payload is at least this many bytes.
-    CompressAt = 1024,
+    CompressAt = 8192,
 
     -- How long to wait before retrying a chunk that was not acknowledged.
     RetryInterval = 0.75,
@@ -694,7 +694,7 @@ ChrononLabsStreamNet.SetConfig ("RetryInterval", 0.75)
 ChrononLabsStreamNet.SetConfig ("Timeout", 20)
 ChrononLabsStreamNet.SetConfig ("MaximumRetries", 16)
 ChrononLabsStreamNet.SetConfig ("Compress", true)
-ChrononLabsStreamNet.SetConfig ("CompressAt", 1024)
+ChrononLabsStreamNet.SetConfig ("CompressAt", 8192)
 ChrononLabsStreamNet.SetConfig ("MaximumPayloadBytes", 8 * 1024 * 1024)
 ChrononLabsStreamNet.SetConfig ("MaximumIncomingTransfersPerPeer", 24)
 ChrononLabsStreamNet.SetConfig ("MaximumTablePairs", 4096)
@@ -724,7 +724,7 @@ concommand.Add ("clsnet_bonus_send_big", function (ply)
         ChrononLabsStreamNet.SendRaw ("ExampleBonusBigPayload", target, payload, {
             ChunkSize = 16384,
             Compress = true,
-            CompressAt = 1024,
+            CompressAt = 8192,
             RetryInterval = 0.75,
             Timeout = 25,
             MaximumRetries = 20,

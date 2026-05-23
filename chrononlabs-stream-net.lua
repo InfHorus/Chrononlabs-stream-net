@@ -114,7 +114,7 @@ config.RetryInterval                   = config.RetryInterval or 0.75
 config.Timeout                         = config.Timeout or 20
 config.MaximumRetries                  = config.MaximumRetries or 16
 config.Compress                        = config.Compress ~= false
-config.CompressAt                      = config.CompressAt or 1024
+config.CompressAt                      = config.CompressAt or 8192
 config.MaximumPayloadBytes             = config.MaximumPayloadBytes or 8 * 1024 * 1024
 config.MaximumIncomingTransfersPerPeer = config.MaximumIncomingTransfersPerPeer or 24
 config.MaximumTablePairs               = config.MaximumTablePairs or 4096
