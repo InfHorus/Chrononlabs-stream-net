@@ -8,9 +8,15 @@ It is not only useful for large payloads. It can also be used as a better organi
 
 ## Why it exists
 
-Garry's Mod networking has strict size limits and can become unstable if large data is sent too aggressively. ChrononLabsStreamNet handles this by automatically splitting, pacing, validating, retrying, and rebuilding transfers.
+Garry's Mod networking is fine for small one off messages, but it gets painful when an addon needs larger data, safer client messages, progress tracking, retries, or cleaner control over how data is sent.
 
-Instead of manually writing your own chunking system every time, you get one unified API that can handle both small and large messages.
+The normal net system has a practical message limit around 64 KB. ChrononLabsStreamNet uses streamed chunks, so the default payload limit is 8 MB and can be changed for trusted use cases. It also paces the transfer, checks the data, retries missing chunks, and rebuilds the full payload before your callback runs.
+
+This is useful for inventory data, save data, debug dumps, admin tools, UI state, generated cache data, raw binary data, and other addon systems where normal net messages start to feel too limited or messy.
+
+It is not just about large payloads either. The library also gives you receive policies, priority, compression, progress callbacks, cancellation, timeout handling, stats, and one simple API for both client to server and server to client messages.
+
+Instead of writing a custom chunking and retry system in every project, you get one shared layer that handles the transport work and lets your addon code focus on the data it actually wants to send.
 
 ## Main advantages
 
