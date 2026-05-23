@@ -27,7 +27,10 @@ Instead of manually writing your own chunking system every time, you get one uni
 - Transfer timeout handling
 - Full payload validation before delivery
 - Checksum validation for chunks and complete transfers
+- Duplicate delivery protection for late retry packets
 - Completion callbacks
+- Progress callbacks for outgoing transfers
+- Outgoing transfer lookup and cancellation
 - Raw binary streaming mode
 - Useful for basic addons, advanced systems, admin tools, anticheat systems, AI telemetry, save systems, and file-like transfers
 
