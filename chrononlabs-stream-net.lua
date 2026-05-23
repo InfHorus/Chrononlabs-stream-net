@@ -59,6 +59,7 @@ local stringSub    = string.sub
 local tableConcat  = table.concat
 local tableInsert  = table.insert
 local tableRemove  = table.remove
+local tableSort    = table.sort
 local tableUnpack  = unpack
 local type         = type
 local tostring     = tostring
@@ -126,6 +127,7 @@ config.MaximumPacketsPerThink          = config.MaximumPacketsPerThink or 24
 config.FinishedIncomingTtl             = config.FinishedIncomingTtl or mathMax (config.Timeout, 30)
 config.MaximumFinishedIncomingPerPeer  = config.MaximumFinishedIncomingPerPeer or 256
 config.FinishedControlResendInterval   = config.FinishedControlResendInterval or 0.25
+config.PriorityAgingInterval           = config.PriorityAgingInterval or 2
 config.QueueUntilClientReady           = config.QueueUntilClientReady or false
 config.Debug                           = config.Debug or false
 
@@ -730,6 +732,26 @@ local function safeChunkSize (name, wantedChunkSize)
 	return clamp (mathFloor (wantedChunkSize), 512, maximumChunkSize)
 end
 
+local function parsePriority (priority)
+	if priority == nil then return 2, "normal" end
+
+	local priorityName = lowerName (priority)
+
+	if priorityName == "high" then
+		return 3, "high"
+	end
+
+	if priorityName == "normal" or priorityName == "default" then
+		return 2, "normal"
+	end
+
+	if priorityName == "low" then
+		return 1, "low"
+	end
+
+	return nil, "(ChrononLabs-StreamNet): Invalid priority. Use high, normal, low, or default."
+end
+
 local function makeTransfer (name, peer, payloadMode, payload, options)
 	options = options or {}
 	name    = tostring (name or "")
@@ -762,6 +784,11 @@ local function makeTransfer (name, peer, payloadMode, payload, options)
 
 	local chunkSize   = safeChunkSize (name, options.ChunkSize)
 	local totalChunks = mathMax (1, mathCeil (#payload / chunkSize))
+	local priority, priorityName = parsePriority (options.Priority or options.priority)
+
+	if not priority then
+		return false, priorityName
+	end
 
 	local transfer = {
 		Id                    = nextTransferId (),
@@ -793,6 +820,9 @@ local function makeTransfer (name, peer, payloadMode, payload, options)
 		MaximumRetries        = tonumber (options.MaximumRetries) or config.MaximumRetries,
 		Window                = tonumber (options.Window) or config.Window,
 		ReliableData          = options.ReliableData == true,
+		Priority              = priority,
+		PriorityName          = priorityName,
+		LastScheduledAt       = now (),
 		Callback              = options.OnComplete or options.onComplete,
 		ProgressCallback      = options.OnProgress or options.onProgress,
 		ProgressInterval      = mathMax (0, tonumber (options.ProgressInterval) or 0.25),
@@ -1094,13 +1124,13 @@ end
 
 local function pumpTransfer (state, transfer, currentTime)
 	if not canSendToPeer (transfer.Peer) then
-		return
+		return false
 	end
 
 	if currentTime - transfer.LastProgress > transfer.Timeout then
 		sendCancel (transfer.Peer, transfer.Id, "(ChrononLabs-StreamNet): Sender timeout. Increase Timeout, reduce payload size, or lower pacing pressure.")
 		completeTransfer (state, transfer, false, "(ChrononLabs-StreamNet): Timeout. Increase Timeout, reduce payload size, or lower pacing pressure.")
-		return
+		return false
 	end
 
 	local sentPackets = 0
@@ -1133,7 +1163,7 @@ local function pumpTransfer (state, transfer, currentTime)
 		if retry and retryCount >= transfer.MaximumRetries then
 			sendCancel (transfer.Peer, transfer.Id, "(ChrononLabs-StreamNet): Maximum retries reached. Increase MaximumRetries or RetryInterval, or reduce transfer pressure.")
 			completeTransfer (state, transfer, false, "(ChrononLabs-StreamNet): Maximum retries reached. Increase MaximumRetries or RetryInterval, or reduce transfer pressure.")
-			return
+			return false
 		end
 
 		local startPosition = (sequence - 1) * transfer.ChunkSize + 1
@@ -1153,7 +1183,7 @@ local function pumpTransfer (state, transfer, currentTime)
 
 		if not sent then
 			completeTransfer (state, transfer, false, "(ChrononLabs-StreamNet): Send failed. Check the target and avoid sending while the peer is disconnecting.")
-			return
+			return false
 		end
 
 		state.Budget = mathMax (0, state.Budget - usedBytes)
@@ -1161,6 +1191,8 @@ local function pumpTransfer (state, transfer, currentTime)
 	end
 
 	emitProgress (transfer, currentTime, false)
+
+	return sentPackets > 0
 end
 
 local function flushOutgoing (currentTime)
@@ -1186,8 +1218,36 @@ local function flushOutgoing (currentTime)
 				if transfer.Done then
 					tableRemove (state.Queue, transferIndex)
 				else
-					pumpTransfer (state, transfer, currentTime)
 					transferIndex = transferIndex + 1
+				end
+			end
+
+			local activeTransfers = {}
+
+			for transferIndex, transfer in ipairs (state.Queue) do
+				activeTransfers [#activeTransfers + 1] = transfer
+			end
+
+			local agingInterval = mathMax (0.001, tonumber (config.PriorityAgingInterval) or 2)
+
+			local function effectivePriority (transfer)
+				return transfer.Priority + mathMin (2, (currentTime - transfer.LastScheduledAt) / agingInterval)
+			end
+
+			tableSort (activeTransfers, function (leftTransfer, rightTransfer)
+				local leftPriority  = effectivePriority (leftTransfer)
+				local rightPriority = effectivePriority (rightTransfer)
+
+				if leftPriority ~= rightPriority then
+					return leftPriority > rightPriority
+				end
+
+				return leftTransfer.CreatedAt < rightTransfer.CreatedAt
+			end)
+
+			for transferIndex, transfer in ipairs (activeTransfers) do
+				if pumpTransfer (state, transfer, currentTime) then
+					transfer.LastScheduledAt = currentTime
 				end
 			end
 		end

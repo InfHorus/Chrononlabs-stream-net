@@ -24,6 +24,7 @@ Instead of manually writing your own chunking system every time, you get one uni
 - Optional compression using `util.Compress`
 - ACK and NACK recovery system
 - Automatic retry of missing chunks
+- Transfer priority for high, normal, and low priority sends
 - Transfer timeout handling
 - Full payload validation before delivery
 - Checksum validation for chunks and complete transfers
@@ -148,6 +149,7 @@ ChrononLabsStreamNet.SendEx ("LargeInventorySync", ply, {
     Timeout = 20,
     MaximumRetries = 16,
     Compress = true,
+    Priority = "normal",
     ProgressInterval = 0.25,
     OnProgress = function (transfer)
         print ("Transfer progress:", transfer.AckCount .. "/" .. transfer.TotalChunks)
@@ -169,6 +171,7 @@ ChrononLabsStreamNet.SetConfig ("BurstBytes", 65536)
 ChrononLabsStreamNet.SetConfig ("Window", 6)
 ChrononLabsStreamNet.SetConfig ("Timeout", 20)
 ChrononLabsStreamNet.SetConfig ("MaximumRetries", 16)
+ChrononLabsStreamNet.SetConfig ("PriorityAgingInterval", 2)
 ```
 
 ## Stats
@@ -209,6 +212,24 @@ On the client, drop the player argument of course:
 ```lua
 ChrononLabsStreamNet.Cancel (id, "(MyAddon): Upload cancelled by user.")
 ```
+
+## Transfer priority
+
+Priority controls which outgoing transfers get pumped first when a peer has multiple active sends.
+
+```lua
+ChrononLabsStreamNet.SendEx ("MenuState", ply, {
+    Priority = "high"
+}, state)
+
+ChrononLabsStreamNet.SendRaw ("DebugDump", ply, payload, {
+    Priority = "low"
+})
+```
+
+Use priority when one transfer should move ahead of other queued sends for the same peer. `high` can be used for large payloads too, but it will get pumped before normal and low priority transfers, so it can delay other messages if the payload is huge. Use `low` for work that can wait.
+
+`PriorityAgingInterval` controls how quickly waiting transfers get another chance to send. With the default value of `2`, a transfer that has been waiting for a couple of seconds gets a small boost, so low priority transfers do not sit forever behind higher priority sends.
 
 ## Example use cases
 
@@ -568,6 +589,9 @@ local options = {
     -- true means data chunks are sent reliable, which is not recommended for very large transfers.
     ReliableData = false,
 
+    -- high, normal, or low. Higher priority transfers are pumped first.
+    Priority = "normal",
+
     -- How often progress callbacks can fire while acknowledged chunks change.
     ProgressInterval = 0.25,
 
@@ -644,6 +668,7 @@ ChrononLabsStreamNet.SetConfig ("MaximumPacketsPerThink", 24)
 ChrononLabsStreamNet.SetConfig ("FinishedIncomingTtl", 30)
 ChrononLabsStreamNet.SetConfig ("MaximumFinishedIncomingPerPeer", 256)
 ChrononLabsStreamNet.SetConfig ("FinishedControlResendInterval", 0.25)
+ChrononLabsStreamNet.SetConfig ("PriorityAgingInterval", 2)
 ChrononLabsStreamNet.SetConfig ("QueueUntilClientReady", false)
 ChrononLabsStreamNet.SetConfig ("Debug", false)
 ```
