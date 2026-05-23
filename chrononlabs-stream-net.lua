@@ -277,7 +277,7 @@ end
 
 local function readUnsigned8 (reader)
 	if reader.Position > reader.Length then
-		error ("ChrononLabsStreamNet decode reached end of stream")
+		error ("(ChrononLabs-StreamNet): Decode reached end of stream. Make sure both sides use the same library version and serializer format.")
 	end
 
 	local numberValue = stringByte (reader.Data, reader.Position)
@@ -316,11 +316,11 @@ local function readString (reader)
 	local length = readUnsigned32 (reader)
 
 	if length < 0 or length > config.MaximumPayloadBytes then
-		error ("ChrononLabsStreamNet decode string length is invalid")
+		error ("(ChrononLabs-StreamNet): Decode string length is invalid. Check for corrupted payloads or mismatched library versions.")
 	end
 
 	if reader.Position + length - 1 > reader.Length then
-		error ("ChrononLabsStreamNet decode string exceeds stream")
+		error ("(ChrononLabs-StreamNet): Decode string exceeds stream. Check for corrupted payloads or mismatched library versions.")
 	end
 
 	local data      = stringSub (reader.Data, reader.Position, reader.Position + length - 1)
@@ -406,11 +406,11 @@ writeValue = function (output, value, depth, seen)
 
 	if valueType == "table" then
 		if depth > config.MaximumTableDepth then
-			error ("ChrononLabsStreamNet serializer table depth limit exceeded")
+			error ("(ChrononLabs-StreamNet): Serializer table depth limit exceeded. Increase MaximumTableDepth, or flatten the table.")
 		end
 
 		if seen [value] then
-			error ("ChrononLabsStreamNet serializer cyclic table")
+			error ("(ChrononLabs-StreamNet): Serializer cyclic table. Remove self-references before sending.")
 		end
 
 		seen [value] = true
@@ -422,7 +422,7 @@ writeValue = function (output, value, depth, seen)
 
 			if pairCount > config.MaximumTablePairs then
 				seen [value] = nil
-				error ("ChrononLabsStreamNet serializer table pair limit exceeded")
+				error ("(ChrononLabs-StreamNet): Serializer table pair limit exceeded. Increase MaximumTablePairs, or send fewer keys.")
 			end
 		end
 
@@ -438,12 +438,12 @@ writeValue = function (output, value, depth, seen)
 		return
 	end
 
-	error ("ChrononLabsStreamNet serializer unsupported type " .. valueType)
+	error ("(ChrononLabs-StreamNet): Serializer unsupported type " .. valueType .. ". Send a network-safe value instead, or use SendRaw with your own serializer.")
 end
 
 readValue = function (reader, depth)
 	if depth > config.MaximumTableDepth then
-		error ("ChrononLabsStreamNet decode table depth limit exceeded")
+		error ("(ChrononLabs-StreamNet): Decode table depth limit exceeded. Check MaximumTableDepth and make sure both sides use matching limits.")
 	end
 
 	local tag = readUnsigned8 (reader)
@@ -486,7 +486,7 @@ readValue = function (reader, depth)
 		local pairCount = readUnsigned32 (reader)
 
 		if pairCount > config.MaximumTablePairs then
-			error ("ChrononLabsStreamNet decode table pair limit exceeded")
+			error ("(ChrononLabs-StreamNet): Decode table pair limit exceeded. Check MaximumTablePairs and make sure both sides use matching limits.")
 		end
 
 		local output = {}
@@ -503,7 +503,7 @@ readValue = function (reader, depth)
 		return output
 	end
 
-	error ("ChrononLabsStreamNet decode unknown tag " .. tostring (tag))
+	error ("(ChrononLabs-StreamNet): Decode unknown tag " .. tostring (tag) .. ". Make sure both sides use the same library version and serializer format.")
 end
 
 local function encodeArguments (startIndex, ...)
@@ -536,7 +536,7 @@ local function decodeArguments (data)
 	local version = readUnsigned8 (reader)
 
 	if version ~= 1 then
-		error ("ChrononLabsStreamNet decode serializer version mismatch")
+		error ("(ChrononLabs-StreamNet): Decode serializer version mismatch. Make sure both sides use the same library version.")
 	end
 
 	local argumentCount = readUnsigned16 (reader)
@@ -727,10 +727,10 @@ local function makeTransfer (name, peer, payloadMode, payload, options)
 	options = options or {}
 	name    = tostring (name or "")
 
-	if name == "" then return false, "empty message name" end
-	if #name > 128 then return false, "message name too long" end
-	if type (payload) ~= "string" then return false, "payload must be a string" end
-	if #payload > config.MaximumPayloadBytes then return false, "payload too large" end
+	if name == "" then return false, "(ChrononLabs-StreamNet): Empty message name. Pass a non-empty string message name." end
+	if #name > 128 then return false, "(ChrononLabs-StreamNet): Message name too long. Use a message name with 128 characters or fewer." end
+	if type (payload) ~= "string" then return false, "(ChrononLabs-StreamNet): Payload must be a string. Use Send for structured values or SendRaw with encoded bytes." end
+	if #payload > config.MaximumPayloadBytes then return false, "(ChrononLabs-StreamNet): Payload too large. Reduce or split the payload, or increase MaximumPayloadBytes for trusted transfers." end
 
 	local rawSize        = #payload
 	local compressed     = false
@@ -750,7 +750,7 @@ local function makeTransfer (name, peer, payloadMode, payload, options)
 	end
 
 	if #payload > config.MaximumPayloadBytes then
-		return false, "packed payload too large"
+		return false, "(ChrononLabs-StreamNet): Packed payload too large. Reduce or split the payload, or increase MaximumPayloadBytes for trusted transfers."
 	end
 
 	local chunkSize   = safeChunkSize (name, options.ChunkSize)
@@ -794,7 +794,7 @@ end
 
 local function enqueueTransfer (name, target, payloadMode, payload, options)
 	local state = getOutgoingState (target)
-	if not state then return false, "invalid target" end
+	if not state then return false, "(ChrononLabs-StreamNet): Invalid target. Pass a valid player, player list, nil, or true depending on the send direction." end
 
 	local transfer, errorMessage = makeTransfer (name, target, payloadMode, payload, options)
 
@@ -840,7 +840,7 @@ local function sendToTargets (name, target, payloadMode, payload, options)
 		end
 
 		if not anySent then
-			return false, lastError or "no valid targets"
+			return false, lastError or "(ChrononLabs-StreamNet): No valid targets. Pass at least one valid player target."
 		end
 
 		if #ids == 1 then
@@ -877,7 +877,7 @@ local function sendToTargets (name, target, payloadMode, payload, options)
 		end
 
 		if not anySent then
-			return false, lastError or "no valid targets"
+			return false, lastError or "(ChrononLabs-StreamNet): No valid targets. Pass at least one valid player target."
 		end
 
 		if #ids == 1 then
@@ -887,7 +887,7 @@ local function sendToTargets (name, target, payloadMode, payload, options)
 		return ids
 	end
 
-	return false, "no valid targets"
+	return false, "(ChrononLabs-StreamNet): No valid targets. Pass at least one valid player target."
 end
 
 local function queueControlPacket (root, peer, transferId, sequence)
@@ -951,7 +951,7 @@ end
 local function sendCancel (peer, transferId, reason)
 	startPacket (packetCancel, false)
 	writeNetUnsigned32 (transferId)
-	netWriteString (tostring (reason or "cancel"))
+	netWriteString (tostring (reason or "(ChrononLabs-StreamNet): Cancel. The remote side cancelled this transfer."))
 	sendCurrentPacket (peer)
 end
 
@@ -979,7 +979,7 @@ local function completeTransfer (state, transfer, ok, reason)
 		local callbackOk, callbackError = pcall (transfer.Callback, ok, reason or "", transfer)
 
 		if not callbackOk then
-			ErrorNoHalt ("(ChrononLabs-StreamNet) OnComplete error: " .. tostring (callbackError) .. "\n")
+			ErrorNoHalt ("(ChrononLabs-StreamNet): OnComplete error: " .. tostring (callbackError) .. ". Fix the OnComplete callback for this transfer.\n")
 		end
 	end
 end
@@ -1067,8 +1067,8 @@ local function pumpTransfer (state, transfer, currentTime)
 	end
 
 	if currentTime - transfer.LastProgress > transfer.Timeout then
-		sendCancel (transfer.Peer, transfer.Id, "sender timeout")
-		completeTransfer (state, transfer, false, "timeout")
+		sendCancel (transfer.Peer, transfer.Id, "(ChrononLabs-StreamNet): Sender timeout. Increase Timeout, reduce payload size, or lower pacing pressure.")
+		completeTransfer (state, transfer, false, "(ChrononLabs-StreamNet): Timeout. Increase Timeout, reduce payload size, or lower pacing pressure.")
 		return
 	end
 
@@ -1100,8 +1100,8 @@ local function pumpTransfer (state, transfer, currentTime)
 		local retryCount = transfer.Retries [sequence] or 0
 
 		if retry and retryCount >= transfer.MaximumRetries then
-			sendCancel (transfer.Peer, transfer.Id, "maximum retries reached")
-			completeTransfer (state, transfer, false, "maximum retries reached")
+			sendCancel (transfer.Peer, transfer.Id, "(ChrononLabs-StreamNet): Maximum retries reached. Increase MaximumRetries or RetryInterval, or reduce transfer pressure.")
+			completeTransfer (state, transfer, false, "(ChrononLabs-StreamNet): Maximum retries reached. Increase MaximumRetries or RetryInterval, or reduce transfer pressure.")
 			return
 		end
 
@@ -1121,7 +1121,7 @@ local function pumpTransfer (state, transfer, currentTime)
 		local sent, usedBytes = sendChunk (state, transfer, sequence, retry)
 
 		if not sent then
-			completeTransfer (state, transfer, false, "send failed")
+			completeTransfer (state, transfer, false, "(ChrononLabs-StreamNet): Send failed. Check the target and avoid sending while the peer is disconnecting.")
 			return
 		end
 
@@ -1175,12 +1175,12 @@ local function deliverIncoming (peer, bucket, incoming)
 	local packedPayload = tableConcat (incoming.Chunks, "", 1, incoming.TotalChunks)
 
 	if #packedPayload ~= incoming.PackedSize then
-		failIncoming (peer, bucket, incoming, "assembled size mismatch")
+		failIncoming (peer, bucket, incoming, "(ChrononLabs-StreamNet): Assembled size mismatch. Check for corrupted chunks or mismatched library versions.")
 		return
 	end
 
 	if crc (packedPayload) ~= incoming.Checksum then
-		failIncoming (peer, bucket, incoming, "assembled checksum mismatch")
+		failIncoming (peer, bucket, incoming, "(ChrononLabs-StreamNet): Assembled checksum mismatch. Check for corrupted chunks or mismatched library versions.")
 		return
 	end
 
@@ -1188,14 +1188,14 @@ local function deliverIncoming (peer, bucket, incoming)
 
 	if incoming.Compressed then
 		if not utilDecompress then
-			failIncoming (peer, bucket, incoming, "decompressor unavailable")
+			failIncoming (peer, bucket, incoming, "(ChrononLabs-StreamNet): Decompressor unavailable. Disable compression or run in an environment with util.Decompress.")
 			return
 		end
 
 		local decompressOk, decompressedPayload = pcall (utilDecompress, packedPayload, incoming.RawSize)
 
 		if not decompressOk or type (decompressedPayload) ~= "string" then
-			failIncoming (peer, bucket, incoming, "decompression failed")
+			failIncoming (peer, bucket, incoming, "(ChrononLabs-StreamNet): Decompression failed. Check for corrupted payloads or mismatched compression settings.")
 			return
 		end
 
@@ -1203,7 +1203,7 @@ local function deliverIncoming (peer, bucket, incoming)
 	end
 
 	if #payload ~= incoming.RawSize then
-		failIncoming (peer, bucket, incoming, "raw size mismatch")
+		failIncoming (peer, bucket, incoming, "(ChrononLabs-StreamNet): Raw size mismatch. Check for corrupted payloads or mismatched library versions.")
 		return
 	end
 
@@ -1218,7 +1218,7 @@ local function deliverIncoming (peer, bucket, incoming)
 			decodeOk, arguments, argumentCount = pcall (decodeArguments, payload)
 
 			if not decodeOk then
-				failIncoming (peer, bucket, incoming, "decode failed")
+				failIncoming (peer, bucket, incoming, "(ChrononLabs-StreamNet): Decode failed. Make sure both sides use the same serializer format.")
 				return
 			end
 		end
@@ -1238,7 +1238,7 @@ local function deliverIncoming (peer, bucket, incoming)
 			end
 
 			if not callbackOk then
-				ErrorNoHalt ("(ChrononLabs-StreamNet) handler error for " .. incoming.Name .. ": " .. tostring (callbackError) .. "\n")
+				ErrorNoHalt ("(ChrononLabs-StreamNet): Handler error for " .. incoming.Name .. ": " .. tostring (callbackError) .. ". Fix the Receive callback for this message.\n")
 			end
 		else
 			local callbackOk, callbackError
@@ -1250,7 +1250,7 @@ local function deliverIncoming (peer, bucket, incoming)
 			end
 
 			if not callbackOk then
-				ErrorNoHalt ("(ChrononLabs-StreamNet) handler error for " .. incoming.Name .. ": " .. tostring (callbackError) .. "\n")
+				ErrorNoHalt ("(ChrononLabs-StreamNet): Handler error for " .. incoming.Name .. ": " .. tostring (callbackError) .. ". Fix the Receive callback for this message.\n")
 			end
 		end
 	end
@@ -1308,7 +1308,7 @@ local function onDataPacket (peer)
 				finished.LastControlSent = currentTime
 			end
 		elseif currentTime - (finished.LastControlSent or 0) >= config.FinishedControlResendInterval then
-			sendCancel (peer, transferId, finished.Reason ~= "" and finished.Reason or "transfer failed")
+			sendCancel (peer, transferId, finished.Reason ~= "" and finished.Reason or "(ChrononLabs-StreamNet): Transfer failed. Retry later or reduce transfer pressure.")
 			finished.LastControlSent = currentTime
 		end
 
@@ -1326,7 +1326,7 @@ local function onDataPacket (peer)
 
 	if not incoming then
 		if countTable (bucket) >= config.MaximumIncomingTransfersPerPeer then
-			sendCancel (peer, transferId, "too many incoming transfers")
+			sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Too many incoming transfers. Increase MaximumIncomingTransfersPerPeer or send fewer concurrent transfers.")
 			return
 		end
 
@@ -1351,7 +1351,7 @@ local function onDataPacket (peer)
 		bucket [transferId] = incoming
 	else
 		if incoming.Mode ~= payloadMode or incoming.Name ~= name or incoming.Compressed ~= compressed or incoming.RawSize ~= rawSize or incoming.PackedSize ~= packedSize or incoming.TotalChunks ~= totalChunks or incoming.Checksum ~= fullChecksum then
-			failIncoming (peer, bucket, incoming, "metadata mismatch")
+			failIncoming (peer, bucket, incoming, "(ChrononLabs-StreamNet): Metadata mismatch. Make sure transfer IDs are not reused with different metadata.")
 			return
 		end
 	end
@@ -1439,7 +1439,7 @@ local function onCancelPacket (peer)
 	local transfer = state and state.ById [transferId]
 
 	if transfer then
-		completeTransfer (state, transfer, false, reason ~= "" and reason or "remote cancel")
+		completeTransfer (state, transfer, false, reason ~= "" and reason or "(ChrononLabs-StreamNet): Remote cancel. The remote side cancelled this transfer.")
 	end
 
 	local bucket = getIncomingBucket (peer)
@@ -1448,7 +1448,7 @@ local function onCancelPacket (peer)
 		local incoming = bucket [transferId]
 
 		if incoming then
-			rememberFinishedIncoming (peer, incoming, false, reason ~= "" and reason or "remote cancel")
+			rememberFinishedIncoming (peer, incoming, false, reason ~= "" and reason or "(ChrononLabs-StreamNet): Remote cancel. The remote side cancelled this transfer.")
 		end
 
 		bucket [transferId] = nil
@@ -1520,7 +1520,7 @@ local function flushIncomingMaintenance (currentTime)
 		else
 			for transferId, incoming in pairs (bucket) do
 				if currentTime - incoming.UpdatedAt > config.Timeout then
-					failIncoming (peer, bucket, incoming, "incoming timeout")
+					failIncoming (peer, bucket, incoming, "(ChrononLabs-StreamNet): Incoming timeout. Increase Timeout, reduce payload size, or lower pacing pressure.")
 				elseif currentTime >= incoming.NextNack and incoming.Received < incoming.TotalChunks then
 					local emitted = 0
 
@@ -1582,8 +1582,8 @@ function library.Tick ()
 end
 
 function library.Receive (name, callback)
-	assert (type (name) == "string", "ChrononLabsStreamNet.Receive name must be a string")
-	assert (type (callback) == "function", "ChrononLabsStreamNet.Receive callback must be a function")
+	assert (type (name) == "string", "(ChrononLabs-StreamNet): Receive name must be a string. Pass the registered message name as the first argument.")
+	assert (type (callback) == "function", "(ChrononLabs-StreamNet): Receive callback must be a function. Pass a function as the second argument.")
 
 	library.Handlers [lowerName (name)] = callback
 
@@ -1635,7 +1635,7 @@ end
 
 function library.Broadcast (name, ...)
 	if not SERVER then
-		return false, "Broadcast is server only"
+		return false, "(ChrononLabs-StreamNet): Broadcast is server only. Use Send from the client or call Broadcast on the server."
 	end
 
 	local payload = encodeArguments (1, ...)
