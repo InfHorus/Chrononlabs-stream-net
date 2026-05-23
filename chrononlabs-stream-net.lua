@@ -592,6 +592,13 @@ local function getOutgoingState (peer)
 	return state
 end
 
+local function readOutgoingState (peer)
+	local key = peerKey (peer)
+	if not key then return nil, nil end
+
+	return library.OutgoingStates [key], key
+end
+
 local function getIncomingBucket (peer)
 	local key = peerKey (peer)
 	if not key then return nil, nil end
@@ -757,36 +764,40 @@ local function makeTransfer (name, peer, payloadMode, payload, options)
 	local totalChunks = mathMax (1, mathCeil (#payload / chunkSize))
 
 	local transfer = {
-		Id             = nextTransferId (),
-		Name           = name,
-		LowerName      = lowerName (name),
-		Mode           = payloadMode,
-		Peer           = peer,
-		Data           = payload,
-		RawSize        = rawSize,
-		PackedSize     = #payload,
-		Compressed     = compressed,
-		Checksum       = crc (payload),
-		ChunkSize      = chunkSize,
-		TotalChunks    = totalChunks,
-		NextSequence   = 1,
-		Sent           = {},
-		Retries        = {},
-		Acked          = {},
-		InFlight       = {},
-		InFlightCount  = 0,
-		AckCount       = 0,
-		NackQueue      = {},
-		NackSeen       = {},
-		NackHead       = 1,
-		CreatedAt      = now (),
-		LastProgress   = now (),
-		RetryInterval  = tonumber (options.RetryInterval) or config.RetryInterval,
-		Timeout        = tonumber (options.Timeout) or config.Timeout,
-		MaximumRetries = tonumber (options.MaximumRetries) or config.MaximumRetries,
-		Window         = tonumber (options.Window) or config.Window,
-		ReliableData   = options.ReliableData == true,
-		Callback       = options.OnComplete or options.onComplete
+		Id                    = nextTransferId (),
+		Name                  = name,
+		LowerName             = lowerName (name),
+		Mode                  = payloadMode,
+		Peer                  = peer,
+		Data                  = payload,
+		RawSize               = rawSize,
+		PackedSize            = #payload,
+		Compressed            = compressed,
+		Checksum              = crc (payload),
+		ChunkSize             = chunkSize,
+		TotalChunks           = totalChunks,
+		NextSequence          = 1,
+		Sent                  = {},
+		Retries               = {},
+		Acked                 = {},
+		InFlight              = {},
+		InFlightCount         = 0,
+		AckCount              = 0,
+		NackQueue             = {},
+		NackSeen              = {},
+		NackHead              = 1,
+		CreatedAt             = now (),
+		LastProgress          = now (),
+		RetryInterval         = tonumber (options.RetryInterval) or config.RetryInterval,
+		Timeout               = tonumber (options.Timeout) or config.Timeout,
+		MaximumRetries        = tonumber (options.MaximumRetries) or config.MaximumRetries,
+		Window                = tonumber (options.Window) or config.Window,
+		ReliableData          = options.ReliableData == true,
+		Callback              = options.OnComplete or options.onComplete,
+		ProgressCallback      = options.OnProgress or options.onProgress,
+		ProgressInterval      = mathMax (0, tonumber (options.ProgressInterval) or 0.25),
+		LastProgressCallback  = 0,
+		LastProgressAckCount  = -1
 	}
 
 	return transfer
@@ -963,6 +974,24 @@ local function sendComplete (peer, transferId, ok, reason)
 	sendCurrentPacket (peer)
 end
 
+local function emitProgress (transfer, currentTime, force)
+	if not transfer.ProgressCallback then return end
+
+	if not force then
+		if transfer.AckCount == transfer.LastProgressAckCount then return end
+		if currentTime - transfer.LastProgressCallback < transfer.ProgressInterval then return end
+	end
+
+	transfer.LastProgressCallback = currentTime
+	transfer.LastProgressAckCount = transfer.AckCount
+
+	local callbackOk, callbackError = pcall (transfer.ProgressCallback, transfer)
+
+	if not callbackOk then
+		ErrorNoHalt ("(ChrononLabs-StreamNet): OnProgress error: " .. tostring (callbackError) .. ". Fix the OnProgress callback for this transfer.\n")
+	end
+end
+
 local function completeTransfer (state, transfer, ok, reason)
 	if transfer.Done then return end
 
@@ -974,6 +1003,8 @@ local function completeTransfer (state, transfer, ok, reason)
 	else
 		library.Metrics.Failed = library.Metrics.Failed + 1
 	end
+
+	emitProgress (transfer, now (), true)
 
 	if transfer.Callback then
 		local callbackOk, callbackError = pcall (transfer.Callback, ok, reason or "", transfer)
@@ -1128,6 +1159,8 @@ local function pumpTransfer (state, transfer, currentTime)
 		state.Budget = mathMax (0, state.Budget - usedBytes)
 		sentPackets  = sentPackets + 1
 	end
+
+	emitProgress (transfer, currentTime, false)
 end
 
 local function flushOutgoing (currentTime)
@@ -1581,6 +1614,25 @@ function library.Tick ()
 	end
 end
 
+local function findOutgoingTransfer (transferId, peer)
+	transferId = tonumber (transferId)
+	if not transferId then return nil, nil end
+
+	local state = readOutgoingState (peer)
+	if not state then return nil, nil end
+
+	local transfer = state.ById [transferId]
+	if transfer then return transfer, state end
+
+	for transferIndex, queuedTransfer in ipairs (state.Queue) do
+		if queuedTransfer.Id == transferId then
+			return queuedTransfer, state
+		end
+	end
+
+	return nil, state
+end
+
 function library.Receive (name, callback)
 	assert (type (name) == "string", "(ChrononLabs-StreamNet): Receive name must be a string. Pass the registered message name as the first argument.")
 	assert (type (callback) == "function", "(ChrononLabs-StreamNet): Receive callback must be a function. Pass a function as the second argument.")
@@ -1643,6 +1695,64 @@ function library.Broadcast (name, ...)
 	return sendToTargets (name, nil, modeArguments, payload, nil)
 end
 
+function library.GetTransfer (transferId, peer)
+	if CLIENT then
+		peer = nil
+	end
+
+	local transfer = findOutgoingTransfer (transferId, peer)
+
+	return transfer
+end
+
+function library.GetTransfers (peer)
+	if CLIENT then
+		peer = nil
+	end
+
+	local state = readOutgoingState (peer)
+
+	if not state then
+		return {}
+	end
+
+	return state.Queue
+end
+
+function library.Cancel (transferId, ...)
+	local peer
+	local reason
+
+	if SERVER then
+		peer   = select (1, ...)
+		reason = select (2, ...)
+	else
+		peer   = nil
+		reason = select (1, ...)
+	end
+
+	local transfer, state = findOutgoingTransfer (transferId, peer)
+
+	if not transfer then
+		return false, "(ChrononLabs-StreamNet): Transfer not found. Check the transfer id and peer."
+	end
+
+	if transfer.Done then
+		return false, "(ChrononLabs-StreamNet): Transfer already completed. Check the transfer id before cancelling."
+	end
+
+	reason = tostring (reason or "")
+
+	if reason == "" then
+		reason = "(ChrononLabs-StreamNet): Transfer cancelled. Cancel was called for this transfer."
+	end
+
+	sendCancel (transfer.Peer, transfer.Id, reason)
+	completeTransfer (state, transfer, false, reason)
+
+	return true, transfer
+end
+
 function library.SetConfig (key, value)
 	config [key] = value
 
@@ -1650,15 +1760,27 @@ function library.SetConfig (key, value)
 end
 
 function library.GetStats ()
-	local outgoingTransfers     = 0
-	local outgoingUnackedChunks = 0
-	local incomingTransfers     = 0
+	local outgoingTransfers      = 0
+	local outgoingUnackedChunks  = 0
+	local outgoingBytesRemaining = 0
+	local incomingTransfers      = 0
 
 	for key, state in pairs (library.OutgoingStates) do
 		outgoingTransfers = outgoingTransfers + #state.Queue
 
 		for transferIndex, transfer in ipairs (state.Queue) do
 			outgoingUnackedChunks = outgoingUnackedChunks + mathMax (0, transfer.TotalChunks - transfer.AckCount)
+
+			if not transfer.Done then
+				for sequence = 1, transfer.TotalChunks do
+					if not transfer.Acked [sequence] then
+						local startPosition = (sequence - 1) * transfer.ChunkSize + 1
+						local endPosition   = mathMin (sequence * transfer.ChunkSize, transfer.PackedSize)
+
+						outgoingBytesRemaining = outgoingBytesRemaining + mathMax (0, endPosition - startPosition + 1)
+					end
+				end
+			end
 		end
 	end
 
@@ -1669,10 +1791,11 @@ function library.GetStats ()
 	end
 
 	return {
-		OutgoingTransfers     = outgoingTransfers,
-		OutgoingUnackedChunks = outgoingUnackedChunks,
-		IncomingTransfers     = incomingTransfers,
-		Metrics               = library.Metrics
+		OutgoingTransfers      = outgoingTransfers,
+		OutgoingUnackedChunks  = outgoingUnackedChunks,
+		OutgoingBytesRemaining = outgoingBytesRemaining,
+		IncomingTransfers      = incomingTransfers,
+		Metrics                = library.Metrics
 	}
 end
 

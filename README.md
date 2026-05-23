@@ -145,6 +145,10 @@ ChrononLabsStreamNet.SendEx ("LargeInventorySync", ply, {
     Timeout = 20,
     MaximumRetries = 16,
     Compress = true,
+    ProgressInterval = 0.25,
+    OnProgress = function (transfer)
+        print ("Transfer progress:", transfer.AckCount .. "/" .. transfer.TotalChunks)
+    end,
     OnComplete = function (ok, reason, transfer)
         print ("Transfer result:", ok, reason)
     end
@@ -176,6 +180,31 @@ You can also access stats manually:
 
 ```lua
 PrintTable (ChrononLabsStreamNet.GetStats ())
+```
+
+Stats now include active outgoing transfers, unacknowledged chunks, remaining outgoing bytes, active incoming transfers, and lifetime metrics. (Very useful for UI / live updates)
+
+## Transfer control
+
+Large outgoing transfers can be inspected or cancelled while they are still running;
+
+```lua
+local id = ChrononLabsStreamNet.SendRaw ("LargeDownload101", ply, data, {
+    OnProgress = function (transfer)
+        print ("Progress:", transfer.AckCount .. "/" .. transfer.TotalChunks)
+    end
+})
+
+local transfer = ChrononLabsStreamNet.GetTransfer (id, ply)
+local transfers = ChrononLabsStreamNet.GetTransfers (ply)
+
+ChrononLabsStreamNet.Cancel (id, ply, "(MyAddon): Download cancelled by user.")
+```
+
+On the client, drop the player argument of course:
+
+```lua
+ChrononLabsStreamNet.Cancel (id, "(MyAddon): Upload cancelled by user.")
 ```
 
 ## Example use cases
@@ -536,6 +565,14 @@ local options = {
     -- true means data chunks are sent reliable, which is not recommended for very large transfers.
     ReliableData = false,
 
+    -- How often progress callbacks can fire while acknowledged chunks change.
+    ProgressInterval = 0.25,
+
+    -- Called while outgoing chunks are acknowledged.
+    OnProgress = function (transfer)
+        print ("Progress:", transfer.AckCount .. "/" .. transfer.TotalChunks)
+    end,
+
     -- Called when the receiver confirms completion, or when the transfer fails.
     OnComplete = function (ok, reason, transfer)
         print ("Transfer finished:", ok, reason)
@@ -559,6 +596,9 @@ local options = {
         print ("ReliableData:", transfer.ReliableData)
         print ("CreatedAt:", transfer.CreatedAt)
         print ("LastProgress:", transfer.LastProgress)
+        print ("ProgressInterval:", transfer.ProgressInterval)
+        print ("LastProgressCallback:", transfer.LastProgressCallback)
+        print ("LastProgressAckCount:", transfer.LastProgressAckCount)
         print ("Done:", transfer.Done)
 
         -- Detailed internal tables:
