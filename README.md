@@ -36,6 +36,7 @@ Instead of writing a custom chunking and retry system in every project, you get 
 - Optional compression with `util.Compress` and `CompressAt`.
 - Raw binary streaming with `SendRaw` when you already have your own encoded format.
 - Structured argument serialization for nil, booleans, numbers, strings, tables, Vector, Angle, Color, and Entity values.
+- Reusable profiles for receive policies and send options.
 - Serializer safety limits with `MaximumTablePairs` and `MaximumTableDepth`.
 - Payload size protection with `MaximumPayloadBytes` and safe chunk sizing.
 - ACK/NACK recovery, where received chunks are confirmed, and missing or corrupted chunks are requested again.
@@ -182,6 +183,39 @@ Use `Broadcast` when the server sends the same structured message to every playe
 Use a receive policy when the message needs safety limits.
 
 Use `OnProgress` with `Cancel` when a transfer should be shown in a UI or stopped by the user.
+
+## Profiles
+
+Profiles let you reuse common receive policy and send option defaults without repeating the same table everywhere which is super convenient.
+
+```lua
+ChrononLabsStreamNet.DefineProfile ("SmallClientAction", {
+    Direction = "client_to_server",
+    MaxBytes = 4096,
+    MaxInFlight = 1,
+    Cooldown = 0.25,
+    RequireReady = true,
+    Priority = "high"
+})
+
+ChrononLabsStreamNet.Receive ("UseItem", "SmallClientAction", function (ply, itemId)
+    print ("Use item:", ply, itemId)
+end)
+
+-- Client
+ChrononLabsStreamNet.SendEx ("UseItem", "SmallClientAction", itemId)
+
+ChrononLabsStreamNet.DefineProfile ("LargeState", {
+    Priority = "normal",
+    Compress = true,
+    Timeout = 30
+})
+
+-- Server
+ChrononLabsStreamNet.SendEx ("InventoryState", ply, "LargeState", data)
+```
+
+`Receive`, `SendEx`, and `SendRaw` can take a profile name where they normally take a policy/options table. `Send` and `Broadcast` don't take profiles because those calls don't have an options slot.
 
 ## Receive policy
 

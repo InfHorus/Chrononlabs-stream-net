@@ -143,6 +143,7 @@ library.AckPending         = library.AckPending or {}
 library.NackPending        = library.NackPending or {}
 library.ReadyPlayers       = library.ReadyPlayers or {}
 library.PlayersByUserId    = library.PlayersByUserId or {}
+library.Profiles           = library.Profiles or {}
 library.NextTransferId     = library.NextTransferId or math.random (1, 2147483000)
 library.Metrics            = library.Metrics or {
 	SentBytes      = 0,
@@ -318,6 +319,7 @@ local function readString (reader)
 	return data
 end
 
+-- IEEE-754 binary64 packing in Lua since GMod has no FFI or string.pack.
 local function writeDouble (output, numberValue)
 	numberValue = numberValue or 0
 
@@ -331,15 +333,15 @@ local function writeDouble (output, numberValue)
 	local exponent
 	local fraction
 
-	if numberValue ~= numberValue then
-		exponent = 2047
-		fraction = 1
+	if numberValue == 0 then
+		exponent = 0
+		fraction = 0
 	elseif numberValue == mathHuge then
 		exponent = 2047
 		fraction = 0
-	elseif numberValue == 0 then
-		exponent = 0
-		fraction = 0
+	elseif numberValue ~= numberValue then
+		exponent = 2047
+		fraction = 1
 	else
 		local mantissa, rawExponent = mathFrexp (numberValue)
 		exponent = rawExponent + 1022
@@ -363,13 +365,13 @@ local function writeDouble (output, numberValue)
 
 	local highWord = sign * 2147483648 + exponent * 1048576 + mathFloor (fraction / 4294967296)
 
-	writeUnsigned32 (output, fraction % 4294967296)
 	writeUnsigned32 (output, highWord)
+	writeUnsigned32 (output, fraction % 4294967296)
 end
 
 local function readDouble (reader)
-	local lowWord  = readUnsigned32 (reader)
 	local highWord = readUnsigned32 (reader)
+	local lowWord  = readUnsigned32 (reader)
 
 	local sign     = mathFloor (highWord / 2147483648) % 2
 	local exponent = mathFloor (highWord / 1048576) % 2048
@@ -861,6 +863,56 @@ local function parsePriority (priority)
 	end
 
 	return nil, "(ChrononLabs-StreamNet): Invalid priority. Use high, normal, low, or default."
+end
+
+local function copyProfileOptions (source)
+	local output = {}
+
+	for key, value in pairs (source or {}) do
+		output [key] = value
+	end
+
+	return output
+end
+
+local function profileByName (profileName)
+	local profile = library.Profiles [lowerName (profileName)]
+
+	if not profile then
+		error ("(ChrononLabs-StreamNet): Unknown profile '" .. tostring (profileName) .. "'. Define it with DefineProfile before using it.")
+	end
+
+	return profile
+end
+
+local function resolveProfileOptions (value)
+	if value == nil then
+		return nil
+	end
+
+	if type (value) == "string" then
+		return copyProfileOptions (profileByName (value))
+	end
+
+	if type (value) ~= "table" then
+		error ("(ChrononLabs-StreamNet): Profile/options must be nil, a profile name string, or an options table.")
+	end
+
+	local profileName = value.Profile or value.profile
+
+	if profileName == nil then
+		return value
+	end
+
+	local output = copyProfileOptions (profileByName (profileName))
+
+	for key, optionValue in pairs (value) do
+		if key ~= "Profile" and key ~= "profile" then
+			output [key] = optionValue
+		end
+	end
+
+	return output
 end
 
 local function normalizeReceivePolicy (policy)
@@ -1983,6 +2035,15 @@ local function findOutgoingTransfer (transferId, peer)
 	return nil, state
 end
 
+function library.DefineProfile (name, options)
+	assert (type (name) == "string" and name ~= "", "(ChrononLabs-StreamNet): Profile name must be a non-empty string.")
+	assert (type (options) == "table", "(ChrononLabs-StreamNet): Profile options must be a table.")
+
+	library.Profiles [lowerName (name)] = copyProfileOptions (options)
+
+	return library
+end
+
 function library.Receive (name, policyOrCallback, maybeCallback)
 	assert (type (name) == "string", "(ChrononLabs-StreamNet): Receive name must be a string. Pass the registered message name as the first argument.")
 
@@ -1996,7 +2057,7 @@ function library.Receive (name, policyOrCallback, maybeCallback)
 		callback = maybeCallback
 		policy   = nil
 	else
-		policy   = normalizeReceivePolicy (policyOrCallback)
+		policy   = normalizeReceivePolicy (resolveProfileOptions (policyOrCallback))
 		callback = maybeCallback
 	end
 
@@ -2026,13 +2087,13 @@ end
 function library.SendEx (name, ...)
 	if SERVER then
 		local target  = select (1, ...)
-		local options = select (2, ...) or {}
+		local options = resolveProfileOptions (select (2, ...)) or {}
 		local payload = encodeArguments (3, ...)
 
 		return sendToTargets (name, target, modeArguments, payload, options)
 	end
 
-	local options = select (1, ...) or {}
+	local options = resolveProfileOptions (select (1, ...)) or {}
 	local payload = encodeArguments (2, ...)
 
 	return enqueueTransfer (name, nil, modeArguments, payload, options)
@@ -2042,13 +2103,13 @@ function library.SendRaw (name, ...)
 	if SERVER then
 		local target  = select (1, ...)
 		local bytes   = select (2, ...) or ""
-		local options = select (3, ...) or {}
+		local options = resolveProfileOptions (select (3, ...)) or {}
 
 		return sendToTargets (name, target, modeRaw, bytes, options)
 	end
 
 	local bytes   = select (1, ...) or ""
-	local options = select (2, ...) or {}
+	local options = resolveProfileOptions (select (2, ...)) or {}
 
 	return enqueueTransfer (name, nil, modeRaw, bytes, options)
 end
