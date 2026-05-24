@@ -194,6 +194,8 @@ local function crc (data)
 	return tostring (utilCRC (data or ""))
 end
 
+-- Before getting any more complaints: I did it this way because from my profiler testings
+-- sending one 32 caused a small client frame hitch that doesn't occur with two 16 despite the small theoretical overhead.
 local function writeNetUnsigned32 (numberValue)
 	numberValue = mathFloor (numberValue or 0) % 4294967296
 
@@ -853,7 +855,7 @@ local function normalizeReceivePolicy (policy)
 	}
 end
 
-local function makeTransfer (name, peer, payloadMode, payload, options)
+local function prepareTransferPayload (name, payloadMode, payload, options)
 	options = options or {}
 	name    = tostring (name or "")
 
@@ -891,12 +893,10 @@ local function makeTransfer (name, peer, payloadMode, payload, options)
 		return false, priorityName
 	end
 
-	local transfer = {
-		Id                    = nextTransferId (),
+	return {
 		Name                  = name,
 		LowerName             = lowerName (name),
 		Mode                  = payloadMode,
-		Peer                  = peer,
 		Data                  = payload,
 		RawSize               = rawSize,
 		PackedSize            = #payload,
@@ -904,6 +904,35 @@ local function makeTransfer (name, peer, payloadMode, payload, options)
 		Checksum              = crc (payload),
 		ChunkSize             = chunkSize,
 		TotalChunks           = totalChunks,
+		RetryInterval         = tonumber (options.RetryInterval) or config.RetryInterval,
+		Timeout               = tonumber (options.Timeout) or config.Timeout,
+		MaximumRetries        = tonumber (options.MaximumRetries) or config.MaximumRetries,
+		Window                = tonumber (options.Window) or config.Window,
+		ReliableData          = options.ReliableData == true,
+		Priority              = priority,
+		PriorityName          = priorityName,
+		Callback              = options.OnComplete or options.onComplete,
+		ProgressCallback      = options.OnProgress or options.onProgress,
+		ProgressInterval      = mathMax (0, tonumber (options.ProgressInterval) or 0.25)
+	}
+end
+
+local function buildTransferFromPrepared (prepared, peer)
+	local currentTime = now ()
+
+	return {
+		Id                    = nextTransferId (),
+		Name                  = prepared.Name,
+		LowerName             = prepared.LowerName,
+		Mode                  = prepared.Mode,
+		Peer                  = peer,
+		Data                  = prepared.Data,
+		RawSize               = prepared.RawSize,
+		PackedSize            = prepared.PackedSize,
+		Compressed            = prepared.Compressed,
+		Checksum              = prepared.Checksum,
+		ChunkSize             = prepared.ChunkSize,
+		TotalChunks           = prepared.TotalChunks,
 		NextSequence          = 1,
 		Sent                  = {},
 		Retries               = {},
@@ -914,24 +943,32 @@ local function makeTransfer (name, peer, payloadMode, payload, options)
 		NackQueue             = {},
 		NackSeen              = {},
 		NackHead              = 1,
-		CreatedAt             = now (),
-		LastProgress          = now (),
-		RetryInterval         = tonumber (options.RetryInterval) or config.RetryInterval,
-		Timeout               = tonumber (options.Timeout) or config.Timeout,
-		MaximumRetries        = tonumber (options.MaximumRetries) or config.MaximumRetries,
-		Window                = tonumber (options.Window) or config.Window,
-		ReliableData          = options.ReliableData == true,
-		Priority              = priority,
-		PriorityName          = priorityName,
-		LastScheduledAt       = now (),
-		Callback              = options.OnComplete or options.onComplete,
-		ProgressCallback      = options.OnProgress or options.onProgress,
-		ProgressInterval      = mathMax (0, tonumber (options.ProgressInterval) or 0.25),
+		CreatedAt             = currentTime,
+		LastProgress          = currentTime,
+		RetryInterval         = prepared.RetryInterval,
+		Timeout               = prepared.Timeout,
+		MaximumRetries        = prepared.MaximumRetries,
+		Window                = prepared.Window,
+		ReliableData          = prepared.ReliableData,
+		Priority              = prepared.Priority,
+		PriorityName          = prepared.PriorityName,
+		LastScheduledAt       = currentTime,
+		Callback              = prepared.Callback,
+		ProgressCallback      = prepared.ProgressCallback,
+		ProgressInterval      = prepared.ProgressInterval,
 		LastProgressCallback  = 0,
 		LastProgressAckCount  = -1
 	}
+end
 
-	return transfer
+local function makeTransfer (name, peer, payloadMode, payload, options)
+	local prepared, errorMessage = prepareTransferPayload (name, payloadMode, payload, options)
+
+	if not prepared then
+		return false, errorMessage
+	end
+
+	return buildTransferFromPrepared (prepared, peer)
 end
 
 local function enqueueTransfer (name, target, payloadMode, payload, options)
@@ -943,6 +980,20 @@ local function enqueueTransfer (name, target, payloadMode, payload, options)
 	if not transfer then
 		return false, errorMessage
 	end
+
+	state.Queue [#state.Queue + 1] = transfer
+	state.ById [transfer.Id]       = transfer
+
+	debugPrint ("queued", transfer.Name, "id", transfer.Id, "chunks", transfer.TotalChunks, "bytes", transfer.PackedSize)
+
+	return transfer.Id, transfer
+end
+
+local function enqueuePreparedTransfer (prepared, target)
+	local state = getOutgoingState (target)
+	if not state then return false, "(ChrononLabs-StreamNet): Invalid target. Pass a valid player, player list, nil, or true depending on the send direction." end
+
+	local transfer = buildTransferFromPrepared (prepared, target)
 
 	state.Queue [#state.Queue + 1] = transfer
 	state.ById [transfer.Id]       = transfer
@@ -966,23 +1017,34 @@ local function sendToTargets (name, target, payloadMode, payload, options)
 	end
 
 	if target == nil or target == true then
-		local ids      = {}
-		local anySent  = false
-		local lastError = nil
+		local targets = {}
 
 		for _, ply in playerIterator () do
-			local id, result = enqueueTransfer (name, ply, payloadMode, payload, options)
-
-			if id then
-				ids [#ids + 1] = id
-				anySent        = true
-			else
-				lastError = result
+			if isPlayerValue (ply) then
+				targets [#targets + 1] = ply
 			end
 		end
 
-		if not anySent then
-			return false, lastError or "(ChrononLabs-StreamNet): No valid targets. Pass at least one valid player target."
+		if #targets == 0 then
+			return false, "(ChrononLabs-StreamNet): No valid targets. Pass at least one valid player target."
+		end
+
+		local prepared, errorMessage = prepareTransferPayload (name, payloadMode, payload, options)
+
+		if not prepared then
+			return false, errorMessage
+		end
+
+		local ids = {}
+
+		for targetIndex, ply in ipairs (targets) do
+			local id, result = enqueuePreparedTransfer (prepared, ply)
+
+			if not id then
+				return false, result
+			end
+
+			ids [#ids + 1] = id
 		end
 
 		if #ids == 1 then
@@ -993,9 +1055,7 @@ local function sendToTargets (name, target, payloadMode, payload, options)
 	end
 
 	if type (target) == "table" then
-		local ids      = {}
-		local anySent  = false
-		local lastError = nil
+		local targets = {}
 
 		for key, value in pairs (target) do
 			local ply = nil
@@ -1007,19 +1067,30 @@ local function sendToTargets (name, target, payloadMode, payload, options)
 			end
 
 			if ply then
-				local id, result = enqueueTransfer (name, ply, payloadMode, payload, options)
-
-				if id then
-					ids [#ids + 1] = id
-					anySent        = true
-				else
-					lastError = result
-				end
+				targets [#targets + 1] = ply
 			end
 		end
 
-		if not anySent then
-			return false, lastError or "(ChrononLabs-StreamNet): No valid targets. Pass at least one valid player target."
+		if #targets == 0 then
+			return false, "(ChrononLabs-StreamNet): No valid targets. Pass at least one valid player target."
+		end
+
+		local prepared, errorMessage = prepareTransferPayload (name, payloadMode, payload, options)
+
+		if not prepared then
+			return false, errorMessage
+		end
+
+		local ids = {}
+
+		for targetIndex, ply in ipairs (targets) do
+			local id, result = enqueuePreparedTransfer (prepared, ply)
+
+			if not id then
+				return false, result
+			end
+
+			ids [#ids + 1] = id
 		end
 
 		if #ids == 1 then
