@@ -19,9 +19,10 @@ end
 
 ChrononLabsStreamNet  = ChrononLabsStreamNet or {}
 
-local library         = ChrononLabsStreamNet
-local channelName     = "ChrononLabsStreamNet"
-local protocolVersion = 1
+local library         	= ChrononLabsStreamNet
+local channelName     	= "ChrononLabsStreamNet"
+local protocolVersion 	= 1
+local minimumChunkSize 	= 512
 
 local packetData     = 1
 local packetAck      = 2
@@ -778,9 +779,13 @@ local function safeChunkSize (name, wantedChunkSize)
 	wantedChunkSize = tonumber (wantedChunkSize) or config.ChunkSize
 
 	local overhead         = 160 + #tostring (name or "")
-	local maximumChunkSize = clamp (config.MaximumNetMessageBytes - overhead, 512, 60000)
+	local maximumChunkSize = clamp (config.MaximumNetMessageBytes - overhead, minimumChunkSize, 60000)
 
-	return clamp (mathFloor (wantedChunkSize), 512, maximumChunkSize)
+	return clamp (mathFloor (wantedChunkSize), minimumChunkSize, maximumChunkSize)
+end
+
+local function maximumChunksForPackedSize (packedSize)
+	return mathMax (1, mathCeil ((tonumber (packedSize) or 0) / minimumChunkSize))
 end
 
 local function parsePriority (priority)
@@ -1477,9 +1482,16 @@ local function onDataPacket (peer)
 	if name == "" or #name > 128 then return end
 	if payloadMode ~= modeArguments and payloadMode ~= modeRaw then return end
 	if rawSize > config.MaximumPayloadBytes or packedSize > config.MaximumPayloadBytes then return end
-	if totalChunks < 1 or totalChunks > 1048576 then return end
+	if totalChunks < 1 or totalChunks > maximumChunksForPackedSize (packedSize) then return end
 	if sequence < 1 or sequence > totalChunks then return end
 	if #chunk ~= chunkLength then return end
+
+	if packedSize == 0 then
+		if totalChunks ~= 1 or sequence ~= 1 or chunkLength ~= 0 then return end
+	else
+		if chunkLength == 0 then return end
+		if chunkLength > packedSize then return end
+	end
 
 	if crc (chunk) ~= chunkChecksum then
 		queueNack (peer, transferId, sequence)
@@ -1591,6 +1603,11 @@ local function onDataPacket (peer)
 	incoming.UpdatedAt = currentTime
 
 	if not incoming.Chunks [sequence] then
+		if incoming.ReceivedBytes + chunkLength > incoming.PackedSize then
+			failIncoming (peer, bucket, incoming, "(ChrononLabs-StreamNet): Received bytes exceed declared packed size. Check for corrupted chunks or mismatched library versions.")
+			return
+		end
+
 		incoming.Chunks [sequence] = chunk
 		incoming.Received          = incoming.Received + 1
 		incoming.ReceivedBytes     = incoming.ReceivedBytes + chunkLength
