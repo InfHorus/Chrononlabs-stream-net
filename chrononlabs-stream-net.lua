@@ -140,6 +140,7 @@ library.FinishedIncoming   = library.FinishedIncoming or {}
 library.AckPending         = library.AckPending or {}
 library.NackPending        = library.NackPending or {}
 library.ReadyPlayers       = library.ReadyPlayers or {}
+library.PlayersByUserId    = library.PlayersByUserId or {}
 library.NextTransferId     = library.NextTransferId or math.random (1, 2147483000)
 library.Metrics            = library.Metrics or {
 	SentBytes      = 0,
@@ -565,12 +566,17 @@ end
 local function peerFromKey (key)
 	if CLIENT then return nil end
 
-	for _, ply in playerIterator () do
-		if ply:UserID () == key then
-			return ply
+	local ply = library.PlayersByUserId [key]
+	if isPlayerValue (ply) then return ply end
+
+	for _, scannedPlayer in playerIterator () do
+		if scannedPlayer:UserID () == key then
+			library.PlayersByUserId [key] = scannedPlayer
+			return scannedPlayer
 		end
 	end
 
+	library.PlayersByUserId [key] = nil
 	return nil
 end
 
@@ -2030,16 +2036,23 @@ if CLIENT then
 end
 
 if SERVER then
+	hookAdd ("PlayerInitialSpawn", "ChrononLabsStreamNetPlayerIndex", function (ply)
+		if isPlayerValue (ply) then
+			library.PlayersByUserId [ply:UserID ()] = ply
+		end
+	end)
+
 	hookAdd ("PlayerDisconnected", "ChrononLabsStreamNetCleanup", function (ply)
 		local key = ply:UserID ()
 
-		library.OutgoingStates [key]   = nil
-		library.IncomingStates [key]   = nil
-		library.FinishedIncoming [key] = nil
+		library.OutgoingStates [key]     = nil
+		library.IncomingStates [key]     = nil
+		library.FinishedIncoming [key]   = nil
 		library.ReceivePolicyState [key] = nil
-		library.AckPending [key]       = nil
-		library.NackPending [key]      = nil
-		library.ReadyPlayers [key]     = nil
+		library.AckPending [key]         = nil
+		library.NackPending [key]        = nil
+		library.ReadyPlayers [key]       = nil
+		library.PlayersByUserId [key]    = nil
 	end)
 end
 
