@@ -49,12 +49,13 @@ local tagEntity = 10
 local mathAbs      = math.abs
 local mathCeil     = math.ceil
 local mathFloor    = math.floor
+local mathFrexp    = math.frexp
 local mathHuge     = math.huge
+local mathLdexp    = math.ldexp
 local mathMax      = math.max
 local mathMin      = math.min
 local stringByte   = string.byte
 local stringChar   = string.char
-local stringFormat = string.format
 local stringLower  = string.lower
 local stringSub    = string.sub
 local tableConcat  = table.concat
@@ -263,24 +264,6 @@ local function writeString (output, data)
 	output [#output + 1] = data
 end
 
-local function numberToString (numberValue)
-	if numberValue ~= numberValue then return "nan" end
-	if numberValue == mathHuge then return "inf" end
-	if numberValue == -mathHuge then return "ninf" end
-	return stringFormat ("%.17g", numberValue)
-end
-
-local function stringToNumber (data)
-	if data == "nan" then return 0 / 0 end
-	if data == "inf" then return mathHuge end
-	if data == "ninf" then return -mathHuge end
-	return tonumber (data) or 0
-end
-
-local function writeNumberText (output, numberValue)
-	writeString (output, numberToString (numberValue or 0))
-end
-
 local function readUnsigned8 (reader)
 	if reader.Position > reader.Length then
 		error ("(ChrononLabs-StreamNet): Decode reached end of stream. Make sure both sides use the same library version and serializer format.")
@@ -335,8 +318,77 @@ local function readString (reader)
 	return data
 end
 
-local function readNumberText (reader)
-	return stringToNumber (readString (reader))
+local function writeDouble (output, numberValue)
+	numberValue = numberValue or 0
+
+	local sign = 0
+
+	if numberValue < 0 or (numberValue == 0 and 1 / numberValue == -mathHuge) then
+		sign        = 1
+		numberValue = -numberValue
+	end
+
+	local exponent
+	local fraction
+
+	if numberValue ~= numberValue then
+		exponent = 2047
+		fraction = 1
+	elseif numberValue == mathHuge then
+		exponent = 2047
+		fraction = 0
+	elseif numberValue == 0 then
+		exponent = 0
+		fraction = 0
+	else
+		local mantissa, rawExponent = mathFrexp (numberValue)
+		exponent = rawExponent + 1022
+
+		if exponent <= 0 then
+			fraction = mathFloor (mantissa * 2 ^ (52 + exponent) + 0.5)
+			exponent = 0
+		else
+			fraction = mathFloor ((mantissa * 2 - 1) * 4503599627370496 + 0.5)
+		end
+
+		if fraction == 4503599627370496 then
+			fraction = 0
+			exponent = exponent + 1
+
+			if exponent >= 2047 then
+				exponent = 2047
+			end
+		end
+	end
+
+	local highWord = sign * 2147483648 + exponent * 1048576 + mathFloor (fraction / 4294967296)
+
+	writeUnsigned32 (output, fraction % 4294967296)
+	writeUnsigned32 (output, highWord)
+end
+
+local function readDouble (reader)
+	local lowWord  = readUnsigned32 (reader)
+	local highWord = readUnsigned32 (reader)
+
+	local sign     = mathFloor (highWord / 2147483648) % 2
+	local exponent = mathFloor (highWord / 1048576) % 2048
+	local fraction = (highWord % 1048576) * 4294967296 + lowWord
+	local value
+
+	if exponent == 2047 then
+		value = fraction == 0 and mathHuge or mathHuge - mathHuge
+	elseif exponent == 0 then
+		value = fraction == 0 and 0.0 or mathLdexp (fraction, -1074)
+	else
+		value = mathLdexp (fraction + 4503599627370496, exponent - 1075)
+	end
+
+	if sign == 1 then
+		value = -value
+	end
+
+	return value
 end
 
 local writeValue
@@ -356,12 +408,12 @@ writeValue = function (output, value, depth, seen)
 	end
 
 	if valueType == "number" then
-		if value == mathFloor (value) and value >= -2147483648 and value <= 2147483647 then
+		if value == mathFloor (value) and value >= -2147483648 and value <= 2147483647 and not (value == 0 and 1 / value == -mathHuge) then
 			writeUnsigned8 (output, tagInt32)
 			writeUnsigned32 (output, value)
 		else
 			writeUnsigned8 (output, tagNumber)
-			writeNumberText (output, value)
+			writeDouble (output, value)
 		end
 
 		return
@@ -387,17 +439,17 @@ writeValue = function (output, value, depth, seen)
 
 	if isvector and isvector (value) then
 		writeUnsigned8 (output, tagVector)
-		writeNumberText (output, value.x)
-		writeNumberText (output, value.y)
-		writeNumberText (output, value.z)
+		writeDouble (output, value.x)
+		writeDouble (output, value.y)
+		writeDouble (output, value.z)
 		return
 	end
 
 	if isangle and isangle (value) then
 		writeUnsigned8 (output, tagAngle)
-		writeNumberText (output, value.p)
-		writeNumberText (output, value.y)
-		writeNumberText (output, value.r)
+		writeDouble (output, value.p)
+		writeDouble (output, value.y)
+		writeDouble (output, value.r)
 		return
 	end
 
@@ -458,15 +510,15 @@ readValue = function (reader, depth)
 	if tag == tagFalse then return false end
 	if tag == tagTrue then return true end
 	if tag == tagInt32 then return readSigned32 (reader) end
-	if tag == tagNumber then return readNumberText (reader) end
+	if tag == tagNumber then return readDouble (reader) end
 	if tag == tagString then return readString (reader) end
 
 	if tag == tagVector then
-		return Vector (readNumberText (reader), readNumberText (reader), readNumberText (reader))
+		return Vector (readDouble (reader), readDouble (reader), readDouble (reader))
 	end
 
 	if tag == tagAngle then
-		return Angle (readNumberText (reader), readNumberText (reader), readNumberText (reader))
+		return Angle (readDouble (reader), readDouble (reader), readDouble (reader))
 	end
 
 	if tag == tagColor then
@@ -520,7 +572,7 @@ local function encodeArguments (startIndex, ...)
 	end
 
 	local output = {}
-	writeUnsigned8 (output, 1)
+	writeUnsigned8 (output, 2)
 	writeUnsigned16 (output, argumentCount)
 
 	local seen = {}
@@ -541,7 +593,7 @@ local function decodeArguments (data)
 
 	local version = readUnsigned8 (reader)
 
-	if version ~= 1 then
+	if version ~= 2 then
 		error ("(ChrononLabs-StreamNet): Decode serializer version mismatch. Make sure both sides use the same library version.")
 	end
 
