@@ -591,12 +591,13 @@ local function getOutgoingState (peer)
 
 	if not state then
 		state = {
-			Key      = key,
-			Peer     = peer,
-			Queue    = {},
-			ById     = {},
-			Budget   = config.BurstBytes,
-			LastTick = now ()
+			Key             = key,
+			Peer            = peer,
+			Queue           = {},
+			ById            = {},
+			ActiveTransfers = {},
+			Budget          = config.BurstBytes,
+			LastTick        = now ()
 		}
 
 		library.OutgoingStates [key] = state
@@ -1367,6 +1368,14 @@ local function pumpTransfer (state, transfer, currentTime)
 	return sentPackets > 0
 end
 
+local function compareScheduledTransfers (leftTransfer, rightTransfer)
+	if leftTransfer.SortPriority ~= rightTransfer.SortPriority then
+		return leftTransfer.SortPriority > rightTransfer.SortPriority
+	end
+
+	return leftTransfer.CreatedAt < rightTransfer.CreatedAt
+end
+
 local function flushOutgoing (currentTime)
 	for key, state in pairs (library.OutgoingStates) do
 		local valid = true
@@ -1398,30 +1407,32 @@ local function flushOutgoing (currentTime)
 				state.Queue [clearIndex] = nil
 			end
 
-			local activeTransfers = {}
-
-			for transferIndex, transfer in ipairs (state.Queue) do
-				activeTransfers [#activeTransfers + 1] = transfer
-			end
+			local activeTransfers = state.ActiveTransfers or {}
+			state.ActiveTransfers = activeTransfers
 
 			local agingInterval = mathMax (0.001, tonumber (config.PriorityAgingInterval) or 2)
+			local activeCount   = 0
 
-			local function effectivePriority (transfer)
-				return transfer.Priority + mathMin (2, (currentTime - transfer.LastScheduledAt) / agingInterval)
+			for transferIndex = 1, #state.Queue do
+				local transfer = state.Queue [transferIndex]
+
+				transfer.SortPriority = transfer.Priority + mathMin (2, (currentTime - transfer.LastScheduledAt) / agingInterval)
+
+				activeCount = activeCount + 1
+				activeTransfers [activeCount] = transfer
 			end
 
-			tableSort (activeTransfers, function (leftTransfer, rightTransfer)
-				local leftPriority  = effectivePriority (leftTransfer)
-				local rightPriority = effectivePriority (rightTransfer)
+			for clearIndex = #activeTransfers, activeCount + 1, -1 do
+				activeTransfers [clearIndex] = nil
+			end
 
-				if leftPriority ~= rightPriority then
-					return leftPriority > rightPriority
-				end
+			if activeCount > 1 then
+				tableSort (activeTransfers, compareScheduledTransfers)
+			end
 
-				return leftTransfer.CreatedAt < rightTransfer.CreatedAt
-			end)
+			for transferIndex = 1, activeCount do
+				local transfer = activeTransfers [transferIndex]
 
-			for transferIndex, transfer in ipairs (activeTransfers) do
 				if pumpTransfer (state, transfer, currentTime) then
 					transfer.LastScheduledAt = currentTime
 				end
