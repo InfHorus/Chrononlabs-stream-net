@@ -36,7 +36,6 @@ Instead of writing a custom chunking and retry system in every project, you get 
 - Optional compression with `util.Compress` and `CompressAt`.
 - Raw binary streaming with `SendRaw` when you already have your own encoded format.
 - Structured argument serialization for nil, booleans, numbers, strings, tables, Vector, Angle, Color, and Entity values.
-- Reusable profiles for receive policies and send options.
 - Serializer safety limits with `MaximumTablePairs` and `MaximumTableDepth`.
 - Payload size protection with `MaximumPayloadBytes` and safe chunk sizing.
 - ACK/NACK recovery, where received chunks are confirmed, and missing or corrupted chunks are requested again.
@@ -53,6 +52,7 @@ Instead of writing a custom chunking and retry system in every project, you get 
 - Runtime stats with `GetStats` and `chrononlabs_streamnet_stats`.
 - Optional client-ready queueing with `QueueUntilClientReady`.
 - Helpful error messages that include short fixes when something is misconfigured.
+- Reusable profiles for receive policies and send options.
 - Optional receive policies for per-message safety limits.
 - Receive `Direction` policies: `any`, `client_to_server`, or `server_to_client`.
 - Receive `MaxBytes` policies to cap the original payload size before compression.
