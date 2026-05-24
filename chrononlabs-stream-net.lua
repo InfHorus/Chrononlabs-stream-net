@@ -1504,14 +1504,23 @@ local function onDataPacket (peer)
 
 	local messageLowerName = lowerName (name)
 	local policy           = library.ReceivePolicies [messageLowerName]
-	local bucket = library.IncomingStates [key]
+	local bucket           = library.IncomingStates [key]
+	local incoming         = bucket and bucket [transferId]
+
+	if not library.Handlers [messageLowerName] then
+		if incoming then
+			failIncoming (peer, bucket, incoming, "(ChrononLabs-StreamNet): No receiver registered for this message.")
+		else
+			sendCancel (peer, transferId, "(ChrononLabs-StreamNet): No receiver registered for this message.")
+		end
+
+		return
+	end
 
 	if not bucket then
 		bucket                       = {}
 		library.IncomingStates [key] = bucket
 	end
-
-	local incoming = bucket [transferId]
 
 	if not incoming then
 		if countTable (bucket) >= config.MaximumIncomingTransfersPerPeer then
