@@ -178,7 +178,7 @@ local function lowerName (name)
 end
 
 local function isPlayerValue (value)
-	return IsValid (value) and value.IsPlayer and value:IsPlayer ()
+	return TypeID (value) == TYPE_ENTITY and IsValid (value) and value:IsPlayer ()
 end
 
 local function nextTransferId ()
@@ -1011,12 +1011,6 @@ local function sendToTargets (name, target, payloadMode, payload, options)
 		return id
 	end
 
-	if isPlayerValue (target) then
-		local id, result = enqueueTransfer (name, target, payloadMode, payload, options)
-		if not id then return false, result end
-		return id
-	end
-
 	if target == nil or target == true then
 		local targets = {}
 
@@ -1053,6 +1047,12 @@ local function sendToTargets (name, target, payloadMode, payload, options)
 		end
 
 		return ids
+	end
+
+	if isPlayerValue (target) then
+		local id, result = enqueueTransfer (name, target, payloadMode, payload, options)
+		if not id then return false, result end
+		return id
 	end
 
 	if type (target) == "table" then
