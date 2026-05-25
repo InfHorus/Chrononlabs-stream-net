@@ -23,7 +23,7 @@ ChrononLabsStreamNet  = ChrononLabsStreamNet or {}
 
 local library         	= ChrononLabsStreamNet
 local channelName     	= "ChrononLabsStreamNet"
-local protocolVersion 	= 1
+local protocolVersion 	= 2
 local minimumChunkSize 	= 512
 
 local packetData     = 1
@@ -223,7 +223,7 @@ local function nextRequestId ()
 end
 
 local function crc (data)
-	return tostring (utilCRC (data or ""))
+	return tonumber (utilCRC (data or "")) or 0
 end
 
 -- Before getting any more complaints: I did it this way because from my profiler testings
@@ -1683,8 +1683,8 @@ local function sendChunk (state, transfer, sequence, retry)
 	writeNetUnsigned32 	(transfer.PackedSize)
 	writeNetUnsigned32 	(transfer.TotalChunks)
 	writeNetUnsigned32 	(sequence)
-	netWriteString 		(transfer.Checksum)
-	netWriteString 		(crc (chunk))
+	writeNetUnsigned32 	(transfer.Checksum)
+	writeNetUnsigned32 	(crc (chunk))
 	netWriteUInt 		(chunkLength, 16)
 
 	if chunkLength > 0 then
@@ -1966,8 +1966,8 @@ local function onDataPacket (peer)
 	local packedSize    = readNetUnsigned32 ()
 	local totalChunks   = readNetUnsigned32 ()
 	local sequence      = readNetUnsigned32 ()
-	local fullChecksum  = netReadString 	()
-	local chunkChecksum = netReadString 	()
+	local fullChecksum  = readNetUnsigned32 ()
+	local chunkChecksum = readNetUnsigned32 ()
 	local chunkLength   = netReadUInt 		(16)
 	local chunk         = ""
 

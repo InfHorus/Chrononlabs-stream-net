@@ -855,6 +855,7 @@ local options = {
         print ("PackedSize:", transfer.PackedSize)
         print ("Compressed:", transfer.Compressed)
         print ("Checksum:", transfer.Checksum)
+        -- Checksum is a numeric CRC32 value.
         print ("ChunkSize:", transfer.ChunkSize)
         print ("TotalChunks:", transfer.TotalChunks)
         print ("AckCount:", transfer.AckCount)
