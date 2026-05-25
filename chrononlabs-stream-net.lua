@@ -460,12 +460,21 @@ writeValue = function (output, value, depth, seen)
 	if IsEntity and IsEntity (value) then
 		writeUnsigned8 (output, tagEntity)
 
+		local entityIndex = 0
+		local creationId  = 0
+
 		if IsValid (value) then
-			writeUnsigned32 (output, value:EntIndex ())
-		else
-			writeUnsigned32 (output, 0)
+			entityIndex = value:EntIndex ()
+
+			if entityIndex > 0 then
+				creationId = value.GetCreationID and value:GetCreationID () or 0
+			else
+				entityIndex = 0
+			end
 		end
 
+		writeUnsigned32 (output, entityIndex)
+		writeUnsigned32 (output, creationId)
 		return
 	end
 
@@ -564,12 +573,23 @@ readValue = function (reader, depth)
 
 	if tag == tagEntity then
 		local entityIndex = readUnsigned32 (reader)
+		local creationId  = readUnsigned32 (reader)
 
-		if Entity then
-			return Entity (entityIndex)
+		if entityIndex <= 0 or not Entity then
+			return NULL
 		end
 
-		return NULL
+		local ent = Entity (entityIndex)
+
+		if not IsValid (ent) then
+			return NULL
+		end
+
+		if creationId > 0 and ent.GetCreationID and ent:GetCreationID () ~= creationId then
+			return NULL
+		end
+
+		return ent
 	end
 
 	if tag == tagTable then
@@ -604,7 +624,7 @@ local function encodeArguments (startIndex, ...)
 	end
 
 	local output = {}
-	writeUnsigned8 (output, 2)
+	writeUnsigned8 (output, 3)
 	writeUnsigned16 (output, argumentCount)
 
 	local seen = {}
@@ -625,7 +645,7 @@ local function decodeArguments (data)
 
 	local version = readUnsigned8 (reader)
 
-	if version ~= 2 then
+	if version ~= 3 then
 		error ("(ChrononLabs-StreamNet): Decode serializer version mismatch. Make sure both sides use the same library version.")
 	end
 
