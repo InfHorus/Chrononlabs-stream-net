@@ -2085,7 +2085,8 @@ local function onDataPacket (peer)
 			ReceivedBytes = 0,
 			CreatedAt     = currentTime,
 			UpdatedAt     = currentTime,
-			NextNack      = currentTime + config.NackInterval
+			NextNackSequence = 1,
+			NextNack         = currentTime + config.NackInterval
 		}
 
 		bucket [transferId] = incoming
@@ -2269,19 +2270,22 @@ local function flushIncomingMaintenance (currentTime)
 				if currentTime - incoming.UpdatedAt > config.Timeout then
 					failIncoming (peer, bucket, incoming, "(ChrononLabs-StreamNet): Incoming timeout. Increase Timeout, reduce payload size, or lower pacing pressure.")
 				elseif currentTime >= incoming.NextNack and incoming.Received < incoming.TotalChunks then
-					local emitted = 0
+					local sequence = incoming.NextNackSequence or 1
+					local checked  = 0
+					local emitted  = 0
+					local nackBatch = mathMax (1, tonumber (config.NackBatch) or 1)
 
-					for sequence = 1, incoming.TotalChunks do
+					while checked < incoming.TotalChunks and emitted < nackBatch do
 						if not incoming.Chunks [sequence] then
 							queueNack (peer, transferId, sequence)
 							emitted = emitted + 1
-
-							if emitted >= config.NackBatch then
-								break
-							end
 						end
+
+						sequence = sequence % incoming.TotalChunks + 1
+						checked  = checked + 1
 					end
 
+					incoming.NextNackSequence = sequence
 					incoming.NextNack = currentTime + config.NackInterval
 				end
 			end
