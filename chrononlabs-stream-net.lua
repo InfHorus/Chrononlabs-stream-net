@@ -1563,13 +1563,15 @@ local function takeSequences (sequenceSet, maximumCount)
 end
 
 local function sendSequenceList (peer, packetKind, transferId, sequences)
-	if #sequences == 0 then return false end
+	local sequenceCount = mathMin (#sequences, 255)
+
+	if sequenceCount == 0 then return false end
 
 	startPacket (packetKind, false)
 	writeNetUnsigned32 (transferId)
-	netWriteUInt (#sequences, 8)
+	netWriteUInt (sequenceCount, 8)
 
-	for sequenceIndex = 1, #sequences do
+	for sequenceIndex = 1, sequenceCount do
 		writeNetUnsigned32 (sequences [sequenceIndex])
 	end
 
@@ -2232,6 +2234,8 @@ netReceive (channelName, function (length, ply)
 end)
 
 local function flushControlRoot (root, packetKind, batchSize)
+	batchSize = mathMin (255, mathMax (1, tonumber (batchSize) or 1))
+
 	for key, byId in pairs (root) do
 		local peer  = peerFromKey (key)
 		local valid = CLIENT or isPlayerValue (peer)
