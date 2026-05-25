@@ -2121,7 +2121,7 @@ end
 local function onAckPacket (peer)
 	local transferId    = readNetUnsigned32 ()
 	local sequenceCount = netReadUInt (8)
-	local state         = getOutgoingState (peer)
+	local state         = readOutgoingState (peer)
 	local transfer      = state and state.ById [transferId]
 
 	for sequenceIndex = 1, sequenceCount do
@@ -2144,7 +2144,7 @@ end
 local function onNackPacket (peer)
 	local transferId    = readNetUnsigned32 ()
 	local sequenceCount = netReadUInt (8)
-	local state         = getOutgoingState (peer)
+	local state         = readOutgoingState (peer)
 	local transfer      = state and state.ById [transferId]
 
 	for sequenceIndex = 1, sequenceCount do
@@ -2160,7 +2160,7 @@ local function onCompletePacket (peer)
 	local transferId = readNetUnsigned32 ()
 	local ok         = netReadBool ()
 	local reason     = netReadString ()
-	local state      = getOutgoingState (peer)
+	local state      = readOutgoingState (peer)
 	local transfer   = state and state.ById [transferId]
 
 	if transfer then
@@ -2183,7 +2183,7 @@ local function onCancelPacket (peer)
 	local transferId = readNetUnsigned32 ()
 	local reason     = netReadString ()
 
-	local state    = getOutgoingState (peer)
+	local state    = readOutgoingState (peer)
 	local transfer = state and state.ById [transferId]
 
 	if transfer then
