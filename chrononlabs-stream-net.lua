@@ -8,6 +8,8 @@
 		ChrononLabsStreamNet.Receive (name, callback)
 		ChrononLabsStreamNet.Send    (name, [target], ...)   -- target is server-side only
 		ChrononLabsStreamNet.Broadcast(name, ...)            -- server only
+		ChrononLabsStreamNet.Request (name, [target], data, options, callback)
+		ChrononLabsStreamNet.Respond (name, policy, callback)
 
 	For the full API (SendEx, SendRaw, options, stats, etc...), see the README:
 		https://github.com/InfHorus/Chrononlabs-StreamNet
@@ -33,6 +35,10 @@ local packetReady    = 6
 
 local modeArguments = 1
 local modeRaw       = 2
+
+local internalNamePrefix = "__chrononlabs_streamnet:"
+local requestNamePrefix  = internalNamePrefix .. "request:"
+local responseName       = internalNamePrefix .. "response"
 
 local tagNil    = 0
 local tagFalse  = 1
@@ -129,6 +135,7 @@ config.MaximumFinishedIncomingPerPeer  = config.MaximumFinishedIncomingPerPeer o
 config.FinishedControlResendInterval   = config.FinishedControlResendInterval or 0.25
 config.PriorityAgingInterval           = config.PriorityAgingInterval or 2
 config.QueueUntilClientReady           = config.QueueUntilClientReady or false
+config.RequestTimeout                  = config.RequestTimeout or 15
 config.Debug                           = config.Debug or false
 
 channelName = config.ChannelName
@@ -145,6 +152,8 @@ library.ReadyPlayers       = library.ReadyPlayers or {}
 library.PlayersByUserId    = library.PlayersByUserId or {}
 library.Profiles           = library.Profiles or {}
 library.NextTransferId     = library.NextTransferId or math.random (1, 2147483000)
+library.NextRequestId      = library.NextRequestId or math.random (1, 2147483000)
+library.PendingRequests    = library.PendingRequests or {}
 library.Metrics            = library.Metrics or {
 	SentBytes      = 0,
 	ReceivedBytes  = 0,
@@ -179,6 +188,18 @@ local function lowerName (name)
 	return stringLower (tostring (name or ""))
 end
 
+local function isReservedMessageName (name)
+	return stringSub (lowerName (name), 1, #internalNamePrefix) == internalNamePrefix
+end
+
+local function validatePublicMessageName (name)
+	if isReservedMessageName (name) then
+		return false, "(ChrononLabs-StreamNet): Reserved message name. Names starting with '" .. internalNamePrefix .. "' are used internally."
+	end
+
+	return true
+end
+
 local function isPlayerValue (value)
 	return TypeID (value) == TYPE_ENTITY and IsValid (value) and value:IsPlayer ()
 end
@@ -190,6 +211,15 @@ local function nextTransferId ()
 	end
 
 	return library.NextTransferId
+end
+
+local function nextRequestId ()
+	library.NextRequestId = library.NextRequestId + 1
+	if library.NextRequestId >= 4294967295 then
+		library.NextRequestId = 1
+	end
+
+	return library.NextRequestId
 end
 
 local function crc (data)
@@ -1208,6 +1238,266 @@ local function sendToTargets (name, target, payloadMode, payload, options)
 	return false, "(ChrononLabs-StreamNet): No valid targets. Pass at least one valid player target."
 end
 
+local function requestChannelName (name)
+	return requestNamePrefix .. lowerName (name)
+end
+
+local function validateRequestName (name)
+	if type (name) ~= "string" then
+		return false, "(ChrononLabs-StreamNet): Request name must be a string. Pass a non-empty request name as the first argument."
+	end
+
+	if name == "" then
+		return false, "(ChrononLabs-StreamNet): Empty request name. Pass a non-empty request name."
+	end
+
+	if isReservedMessageName (name) then
+		return false, "(ChrononLabs-StreamNet): Reserved request name. Names starting with '" .. internalNamePrefix .. "' are used internally."
+	end
+
+	if #requestChannelName (name) > 128 then
+		return false, "(ChrononLabs-StreamNet): Request name too long. Use a shorter request name."
+	end
+
+	return true
+end
+
+local function registerInternalReceive (name, policy, callback)
+	local messageLowerName = lowerName (name)
+
+	library.Handlers [messageLowerName]        = callback
+	library.ReceivePolicies [messageLowerName] = normalizeReceivePolicy (policy)
+end
+
+local function finishPendingRequest (requestId, ok, ...)
+	local pending = library.PendingRequests [requestId]
+
+	if not pending or pending.Consumed then
+		return false
+	end
+
+	pending.Consumed                   = true
+	library.PendingRequests [requestId] = nil
+
+	local callbackOk, callbackError = pcall (pending.Callback, ok == true, ...)
+
+	if not callbackOk then
+		ErrorNoHalt ("(ChrononLabs-StreamNet): Request callback error: " .. tostring (callbackError) .. ". Fix the Request callback for this message.\n")
+	end
+
+	return true
+end
+
+local function failPendingRequestsForPeer (peer, reason)
+	local requestIds = {}
+
+	for requestId, pending in pairs (library.PendingRequests) do
+		if pending.Peer == peer then
+			requestIds [#requestIds + 1] = requestId
+		end
+	end
+
+	for requestIndex, requestId in ipairs (requestIds) do
+		finishPendingRequest (requestId, false, reason)
+	end
+end
+
+local function onInternalResponse (...)
+	local peer
+	local requestId
+	local ok
+	local replyStartIndex
+
+	if SERVER then
+		peer            = select (1, ...)
+		requestId       = select (2, ...)
+		ok              = select (3, ...)
+		replyStartIndex = 4
+	else
+		requestId       = select (1, ...)
+		ok              = select (2, ...)
+		replyStartIndex = 3
+	end
+
+	if type (requestId) ~= "number" or type (ok) ~= "boolean" then return end
+
+	requestId = mathFloor (requestId)
+
+	local pending = library.PendingRequests [requestId]
+	if not pending then return end
+
+	if SERVER and pending.Peer ~= peer then return end
+
+	finishPendingRequest (requestId, ok, select (replyStartIndex, ...))
+end
+
+local function installResponseReceiver ()
+	if library.ResponseReceiverInstalled then return end
+
+	local policy = {
+		Direction = "any"
+	}
+
+	if config.ResponseMaxBytes ~= nil then
+		policy.MaxBytes = config.ResponseMaxBytes
+	end
+
+	registerInternalReceive (responseName, policy, onInternalResponse)
+
+	library.ResponseReceiverInstalled = true
+end
+
+local function requestOptions (options)
+	local resolvedOptions = resolveProfileOptions (options) or {}
+
+	if resolvedOptions.OnComplete ~= nil or resolvedOptions.onComplete ~= nil then
+		return nil, "(ChrononLabs-StreamNet): Request options reserve OnComplete for request delivery tracking. Use the Request callback for the response result."
+	end
+
+	local timeout = resolvedOptions.RequestTimeout or resolvedOptions.requestTimeout or resolvedOptions.Timeout or resolvedOptions.timeout
+	timeout       = tonumber (timeout) or tonumber (config.RequestTimeout) or 15
+
+	if not timeout or timeout <= 0 then
+		return nil, "(ChrononLabs-StreamNet): Request Timeout must be a positive number."
+	end
+
+	local sendOptions = copyProfileOptions (resolvedOptions)
+
+	sendOptions.RequestTimeout = nil
+	sendOptions.requestTimeout = nil
+	sendOptions.Timeout        = nil
+	sendOptions.timeout        = nil
+
+	return sendOptions, nil, timeout
+end
+
+local function sendInternalArguments (name, peer, options, ...)
+	local payload = encodeArguments (1, ...)
+
+	return enqueueTransfer (name, peer, modeArguments, payload, options)
+end
+
+local function sendInternalResponse (peer, requestId, ok, ...)
+	return sendInternalArguments (responseName, peer, nil, requestId, ok == true, ...)
+end
+
+local function startRequest (name, peer, requestData, options, callback)
+	local valid, errorMessage = validateRequestName (name)
+	if not valid then return false, errorMessage end
+
+	assert (type (callback) == "function", "(ChrononLabs-StreamNet): Request callback must be a function. Pass a function as the last argument.")
+
+	if SERVER and not isPlayerValue (peer) then
+		return false, "(ChrononLabs-StreamNet): Request target must be exactly one valid player."
+	end
+
+	installResponseReceiver ()
+
+	local sendOptions, optionsError, timeout = requestOptions (options)
+
+	if not sendOptions then
+		return false, optionsError
+	end
+
+	local channel   = requestChannelName (name)
+	local requestId = nextRequestId ()
+	local payload   = encodeArguments (1, requestId, requestData)
+	local expiresAt = now () + timeout
+
+	library.PendingRequests [requestId] = {
+		Id        = requestId,
+		Peer      = peer,
+		ExpiresAt = expiresAt,
+		Consumed  = false,
+		Callback  = callback
+	}
+
+	sendOptions.OnComplete = function (ok, reason)
+		if ok then return end
+
+		reason = tostring (reason or "")
+		if reason == "" then
+			reason = "(ChrononLabs-StreamNet): Request transport failed."
+		end
+
+		finishPendingRequest (requestId, false, reason)
+	end
+
+	local transferId, result = enqueueTransfer (channel, peer, modeArguments, payload, sendOptions)
+
+	if not transferId then
+		finishPendingRequest (requestId, false, result)
+		return false, result
+	end
+
+	return requestId, transferId
+end
+
+local function sweepPendingRequests (currentTime)
+	if not next (library.PendingRequests) then return end
+
+	local requestIds = {}
+
+	for requestId, pending in pairs (library.PendingRequests) do
+		if currentTime >= (pending.ExpiresAt or 0) then
+			requestIds [#requestIds + 1] = requestId
+		end
+	end
+
+	for requestIndex, requestId in ipairs (requestIds) do
+		finishPendingRequest (requestId, false, "timeout")
+	end
+end
+
+local function respondHandler (name, callback)
+	return function (...)
+		local peer
+		local requestId
+		local requestData
+
+		if SERVER then
+			peer        = select (1, ...)
+			requestId   = select (2, ...)
+			requestData = select (3, ...)
+		else
+			requestId   = select (1, ...)
+			requestData = select (2, ...)
+		end
+
+		if type (requestId) ~= "number" then return end
+
+		requestId = mathFloor (requestId)
+
+		local replied = false
+
+		local function reply (ok, ...)
+			if replied then return false, "(ChrononLabs-StreamNet): Request already replied." end
+
+			local id, result = sendInternalResponse (peer, requestId, ok == true, ...)
+
+			replied = true
+
+			return id, result
+		end
+
+		local callbackOk, callbackError
+
+		if SERVER then
+			callbackOk, callbackError = pcall (callback, peer, requestData, reply)
+		else
+			callbackOk, callbackError = pcall (callback, requestData, reply)
+		end
+
+		if not callbackOk then
+			ErrorNoHalt ("(ChrononLabs-StreamNet): Responder error for " .. tostring (name) .. ": " .. tostring (callbackError) .. ". Fix the Respond callback for this request.\n")
+
+			if not replied then
+				reply (false, "responder error")
+			end
+		end
+	end
+end
+
 local function queueControlPacket (root, peer, transferId, sequence)
 	local key = peerKey (peer)
 	if not key then return end
@@ -2008,6 +2298,7 @@ function library.Tick ()
 	flushOutgoing (currentTime)
 	flushIncomingMaintenance (currentTime)
 	sweepFinishedIncoming (currentTime)
+	sweepPendingRequests (currentTime)
 
 	if currentTime >= nextControlFlush then
 		flushControlRoot (library.AckPending, packetAck, config.AckBatch)
@@ -2047,6 +2338,9 @@ end
 function library.Receive (name, policyOrCallback, maybeCallback)
 	assert (type (name) == "string", "(ChrononLabs-StreamNet): Receive name must be a string. Pass the registered message name as the first argument.")
 
+	local valid, errorMessage = validatePublicMessageName (name)
+	assert (valid, errorMessage)
+
 	local policy
 	local callback
 
@@ -2072,6 +2366,9 @@ function library.Receive (name, policyOrCallback, maybeCallback)
 end
 
 function library.Send (name, ...)
+	local valid, errorMessage = validatePublicMessageName (name)
+	if not valid then return false, errorMessage end
+
 	if SERVER then
 		local target  = select (1, ...)
 		local payload = encodeArguments (2, ...)
@@ -2085,6 +2382,9 @@ function library.Send (name, ...)
 end
 
 function library.SendEx (name, ...)
+	local valid, errorMessage = validatePublicMessageName (name)
+	if not valid then return false, errorMessage end
+
 	if SERVER then
 		local target  = select (1, ...)
 		local options = resolveProfileOptions (select (2, ...)) or {}
@@ -2099,7 +2399,62 @@ function library.SendEx (name, ...)
 	return enqueueTransfer (name, nil, modeArguments, payload, options)
 end
 
+function library.Request (name, ...)
+	if SERVER then
+		local target      = select (1, ...)
+		local requestData = select (2, ...)
+		local options     = select (3, ...)
+		local callback    = select (4, ...)
+
+		if type (options) == "function" and callback == nil then
+			callback = options
+			options  = nil
+		end
+
+		return startRequest (name, target, requestData, options, callback)
+	end
+
+	local requestData = select (1, ...)
+	local options     = select (2, ...)
+	local callback    = select (3, ...)
+
+	if type (options) == "function" and callback == nil then
+		callback = options
+		options  = nil
+	end
+
+	return startRequest (name, nil, requestData, options, callback)
+end
+
+function library.Respond (name, policyOrCallback, maybeCallback)
+	local valid, errorMessage = validateRequestName (name)
+	assert (valid, errorMessage)
+
+	local policy
+	local callback
+
+	if type (policyOrCallback) == "function" and maybeCallback == nil then
+		callback = policyOrCallback
+		policy   = nil
+	elseif policyOrCallback == nil and type (maybeCallback) == "function" then
+		callback = maybeCallback
+		policy   = nil
+	else
+		policy   = normalizeReceivePolicy (resolveProfileOptions (policyOrCallback))
+		callback = maybeCallback
+	end
+
+	assert (type (callback) == "function", "(ChrononLabs-StreamNet): Respond callback must be a function. Pass a function as the second argument.")
+
+	registerInternalReceive (requestChannelName (name), policy, respondHandler (name, callback))
+
+	return library
+end
+
 function library.SendRaw (name, ...)
+	local valid, errorMessage = validatePublicMessageName (name)
+	if not valid then return false, errorMessage end
+
 	if SERVER then
 		local target  = select (1, ...)
 		local bytes   = select (2, ...) or ""
@@ -2118,6 +2473,9 @@ function library.Broadcast (name, ...)
 	if not SERVER then
 		return false, "(ChrononLabs-StreamNet): Broadcast is server only. Use Send from the client or call Broadcast on the server."
 	end
+
+	local valid, errorMessage = validatePublicMessageName (name)
+	if not valid then return false, errorMessage end
 
 	local payload = encodeArguments (1, ...)
 
@@ -2256,6 +2614,8 @@ if SERVER then
 
 	hookAdd ("PlayerDisconnected", "ChrononLabsStreamNetCleanup", function (ply)
 		local key = ply:UserID ()
+
+		failPendingRequestsForPeer (ply, "disconnected")
 
 		library.OutgoingStates [key]     = nil
 		library.IncomingStates [key]     = nil

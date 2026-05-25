@@ -25,7 +25,7 @@ Instead of writing a custom chunking and retry system in every project, you get 
 ## Main advantages
 
 - Single-file library that can live in one shared autorun file.
-- Unified API with `Receive`, `Send`, `SendEx`, `SendRaw`, and `Broadcast`.
+- Unified API with `Receive`, `Send`, `SendEx`, `SendRaw`, `Broadcast`, `Request`, and `Respond`.
 - Two-way networking for client to server and server to client messages.
 - Works for small addon messages, large payloads, and file-like transfers.
 - Cleaner structure than manually managing `net.Start`, `net.Write*`, and `net.Receive`.
@@ -47,6 +47,7 @@ Instead of writing a custom chunking and retry system in every project, you get 
 - Finished-transfer memory with `FinishedIncomingTtl` to ignore late duplicates safely.
 - Completion callbacks with `OnComplete`.
 - Progress callbacks for outgoing transfers with `OnProgress` and `ProgressInterval`.
+- Request/response helpers with correlation, timeout, duplicate-reply protection, and fast failure.
 - Outgoing transfer lookup with `GetTransfer` and `GetTransfers`.
 - Outgoing transfer cancellation with `Cancel`.
 - Runtime stats with `GetStats` and `chrononlabs_streamnet_stats`.
@@ -145,6 +146,80 @@ ChrononLabsStreamNet.SendRaw ("DebugDump", ply, debugJson, {
 
 Try not to mark every large transfer as high priority. If everything is high priority, nothing really is!
 
+### Request/response
+
+Use `Request` and `Respond` when one side asks for data and expects exactly one answer. The library creates the internal request/reply messages, correlates the reply, enforces the timeout, and ignores duplicate or late replies.
+
+#### Client asks the server
+
+```lua
+ChrononLabsStreamNet.Request ("GetInventory", {
+    IncludeEquipment = true
+}, {
+    Timeout = 10
+}, function (ok, responseOrReason)
+    if not ok then
+        print ("Inventory request failed:", responseOrReason)
+        return
+    end
+
+    PrintTable (responseOrReason)
+end)
+```
+
+```lua
+ChrononLabsStreamNet.Respond ("GetInventory", {
+    Direction = "client_to_server",
+    Cooldown = 1,
+    MaxBytes = 4096
+}, function (ply, request, reply)
+    if not IsValid (ply) then
+        reply (false, "invalid player")
+        return
+    end
+
+    if not CanOpenInventory (ply) then
+        reply (false, "not allowed")
+        return
+    end
+
+    reply (true, {
+        Items = BuildInventory (ply),
+        Equipment = request.IncludeEquipment and BuildEquipment (ply) or nil
+    })
+end)
+```
+
+#### Server asks one client
+
+```lua
+ChrononLabsStreamNet.Request ("GetClientState", ply, {
+    IncludeHud = true
+}, {
+    Timeout = 5
+}, function (ok, responseOrReason)
+    if not ok then
+        print ("Client state request failed:", responseOrReason)
+        return
+    end
+
+    PrintTable (responseOrReason)
+end)
+```
+
+```lua
+ChrononLabsStreamNet.Respond ("GetClientState", {
+    Direction = "server_to_client",
+    MaxBytes = 16 * 1024
+}, function (request, reply)
+    reply (true, BuildClientState (request))
+end)
+```
+
+`Request` is point to point. On the server, pass exactly one valid player target. The request payload is one value, while replies can return multiple values with `reply (true, ...)` or fail logically with `reply (false, reason, ...)`.
+
+`Timeout` in `Request` options is the round trip request timeout, not the transport timeout. `OnComplete` is reserved internally for request delivery tracking, but `OnProgress` is allowed if the request upload itself is large enough to show progress.
+
 ### Large transfer with progress
 
 This is a good base pattern for file like data, large JSON, generated cache data, or admin tools.
@@ -179,6 +254,8 @@ Use `SendEx` when you want options like priority, compression, progress, timeout
 Use `SendRaw` when you already have bytes, JSON, compressed data, file data, or your own encoded format.
 
 Use `Broadcast` when the server sends the same structured message to every player.
+
+Use `Request` and `Respond` when one side needs to ask one peer for a result.
 
 Use a receive policy when the message needs safety limits.
 
@@ -215,7 +292,7 @@ ChrononLabsStreamNet.DefineProfile ("LargeState", {
 ChrononLabsStreamNet.SendEx ("InventoryState", ply, "LargeState", data)
 ```
 
-`Receive`, `SendEx`, and `SendRaw` can take a profile name where they normally take a policy/options table. `Send` and `Broadcast` don't take profiles because those calls don't have an options slot.
+`Receive`, `SendEx`, `SendRaw`, `Request`, and `Respond` can take a profile name where they normally take a policy/options table. `Send` and `Broadcast` don't take profiles because those calls don't have an options slot.
 
 ## Receive policy
 
@@ -336,6 +413,8 @@ ChrononLabsStreamNet.SetConfig ("Window", 6)
 ChrononLabsStreamNet.SetConfig ("Timeout", 20)
 ChrononLabsStreamNet.SetConfig ("MaximumRetries", 16)
 ChrononLabsStreamNet.SetConfig ("PriorityAgingInterval", 2)
+ChrononLabsStreamNet.SetConfig ("RequestTimeout", 15)
+ChrononLabsStreamNet.SetConfig ("ResponseMaxBytes", nil)
 ```
 
 ## Stats
@@ -834,6 +913,8 @@ ChrononLabsStreamNet.SetConfig ("MaximumFinishedIncomingPerPeer", 256)
 ChrononLabsStreamNet.SetConfig ("FinishedControlResendInterval", 0.25)
 ChrononLabsStreamNet.SetConfig ("PriorityAgingInterval", 2)
 ChrononLabsStreamNet.SetConfig ("QueueUntilClientReady", false)
+ChrononLabsStreamNet.SetConfig ("RequestTimeout", 15)
+ChrononLabsStreamNet.SetConfig ("ResponseMaxBytes", nil)
 ChrononLabsStreamNet.SetConfig ("Debug", false)
 ```
 
