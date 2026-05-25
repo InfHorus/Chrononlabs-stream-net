@@ -1614,6 +1614,7 @@ local function completeTransfer (state, transfer, ok, reason)
 
 	transfer.Done            = true
 	state.ById [transfer.Id] = nil
+	transfer.Sent           = {}
 
 	if ok then
 		library.Metrics.Completed = library.Metrics.Completed + 1
@@ -2129,6 +2130,7 @@ local function onAckPacket (peer)
 			transfer.Acked [sequence] = true
 			transfer.AckCount         = transfer.AckCount + 1
 			transfer.LastProgress     = now ()
+			transfer.Sent [sequence]  = nil
 
 			if transfer.InFlight [sequence] then
 				transfer.InFlight [sequence] = nil
