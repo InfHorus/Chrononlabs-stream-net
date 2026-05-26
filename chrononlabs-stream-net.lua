@@ -290,16 +290,22 @@ local function sendCurrentPacket (peer)
 	return true
 end
 
+local function appendOutput (output, value)
+	local position  = output.Position + 1
+	output.Position = position
+	output [position] = value
+end
+
 local function writeUnsigned8 (output, numberValue)
-	output [#output + 1] = stringChar (numberValue % 256)
+	appendOutput (output, stringChar (numberValue % 256))
 end
 
 local function writeUnsigned16 (output, numberValue)
-	numberValue          = mathFloor (numberValue or 0)
-	output [#output + 1] = stringChar (
+	numberValue = mathFloor (numberValue or 0)
+	appendOutput (output, stringChar (
 		numberValue % 256,
 		mathFloor (numberValue / 256) % 256
-	)
+	))
 end
 
 local function writeUnsigned32 (output, numberValue)
@@ -309,18 +315,18 @@ local function writeUnsigned32 (output, numberValue)
 		numberValue = numberValue + 4294967296
 	end
 
-	output [#output + 1] = stringChar (
+	appendOutput (output, stringChar (
 		numberValue % 256,
 		mathFloor (numberValue / 256) % 256,
 		mathFloor (numberValue / 65536) % 256,
 		mathFloor (numberValue / 16777216) % 256
-	)
+	))
 end
 
 local function writeString (output, data)
 	data = tostring (data or "")
 	writeUnsigned32 (output, #data)
-	output [#output + 1] = data
+	appendOutput (output, data)
 end
 
 local function readUnsigned8 (reader)
@@ -651,7 +657,7 @@ local function encodeArguments (startIndex, ...)
 		argumentCount = 0
 	end
 
-	local output = {}
+	local output = { Position = 0 }
 	writeUnsigned8 (output, 3)
 	writeUnsigned16 (output, argumentCount)
 
@@ -661,6 +667,7 @@ local function encodeArguments (startIndex, ...)
 		writeValue (output, select (startIndex + argumentIndex - 1, ...), 0, seen)
 	end
 
+	output.Position = nil
 	return tableConcat (output)
 end
 
