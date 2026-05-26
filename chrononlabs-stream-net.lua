@@ -154,7 +154,35 @@ library.Profiles           = library.Profiles or {}
 library.NextTransferId     = library.NextTransferId or math.random (1, 2147483000)
 library.NextRequestId      = library.NextRequestId or math.random (1, 2147483000)
 library.PendingRequests    = library.PendingRequests or {}
-library.Metrics            = library.Metrics or {
+
+-- Auto-refresh support just in case.
+library.IncomingCounts = {}
+for key, bucket in pairs (library.IncomingStates) do
+	local count = 0
+
+	for _ in pairs (bucket) do
+		count = count + 1
+	end
+
+	if count > 0 then
+		library.IncomingCounts [key] = count
+	end
+end
+
+library.FinishedCounts = {}
+for key, bucket in pairs (library.FinishedIncoming) do
+	local count = 0
+
+	for _ in pairs (bucket) do
+		count = count + 1
+	end
+
+	if count > 0 then
+		library.FinishedCounts [key] = count
+	end
+end
+
+library.Metrics    = library.Metrics or {
 	SentBytes      = 0,
 	ReceivedBytes  = 0,
 	SentChunks     = 0,
@@ -741,16 +769,6 @@ local function canSendToPeer (peer)
 	return library.ReadyPlayers [peer:UserID ()] == true
 end
 
-local function countTable (targetTable)
-	local count = 0
-
-	for key in pairs (targetTable) do
-		count = count + 1
-	end
-
-	return count
-end
-
 local function hasAnyEntry (targetTable)
 	return next (targetTable) ~= nil
 end
@@ -769,6 +787,48 @@ local function getFinishedIncomingBucket (peer)
 	return bucket, key
 end
 
+local function addIncoming (key, bucket, id, incoming)
+	if not key or not bucket then return end
+
+	if bucket [id] == nil then
+		library.IncomingCounts [key] = (library.IncomingCounts [key] or 0) + 1
+	end
+
+	bucket [id] = incoming
+end
+
+local function removeIncoming (key, bucket, id)
+	if not key or not bucket then return end
+
+	if bucket [id] ~= nil then
+		bucket [id] = nil
+
+		local count = (library.IncomingCounts [key] or 0) - 1
+		library.IncomingCounts [key] = count > 0 and count or nil
+	end
+end
+
+local function addFinishedIncoming (key, bucket, id, finished)
+	if not key or not bucket then return end
+
+	if bucket [id] == nil then
+		library.FinishedCounts [key] = (library.FinishedCounts [key] or 0) + 1
+	end
+
+	bucket [id] = finished
+end
+
+local function removeFinishedIncoming (key, bucket, id)
+	if not key or not bucket then return end
+
+	if bucket [id] ~= nil then
+		bucket [id] = nil
+
+		local count = (library.FinishedCounts [key] or 0) - 1
+		library.FinishedCounts [key] = count > 0 and count or nil
+	end
+end
+
 local function metadataMatchesFinished (finished, payloadMode, name, compressed, rawSize, packedSize, totalChunks, fullChecksum)
 	return finished.Mode == payloadMode
 		and finished.Name == name
@@ -779,7 +839,7 @@ local function metadataMatchesFinished (finished, payloadMode, name, compressed,
 		and finished.Checksum == fullChecksum
 end
 
-local function enforceFinishedIncomingCap (bucket)
+local function enforceFinishedIncomingCap (key, bucket)
 	local maximum = tonumber (config.MaximumFinishedIncomingPerPeer) or 0
 
 	if maximum < 1 then
@@ -787,10 +847,14 @@ local function enforceFinishedIncomingCap (bucket)
 			bucket [transferId] = nil
 		end
 
+		if key then
+			library.FinishedCounts [key] = nil
+		end
+
 		return
 	end
 
-	while countTable (bucket) > maximum do
+	while (library.FinishedCounts [key] or 0) > maximum do
 		local oldestId
 		local oldestExpiresAt
 
@@ -807,14 +871,14 @@ local function enforceFinishedIncomingCap (bucket)
 			break
 		end
 
-		bucket [oldestId] = nil
+		removeFinishedIncoming (key, bucket, oldestId)
 	end
 end
 
 local function rememberFinishedIncoming (peer, incoming, ok, reason, currentTime)
 	if not incoming then return nil end
 
-	local bucket = getFinishedIncomingBucket (peer)
+	local bucket, key = getFinishedIncomingBucket (peer)
 	if not bucket then return nil end
 
 	currentTime = currentTime or now ()
@@ -834,9 +898,9 @@ local function rememberFinishedIncoming (peer, incoming, ok, reason, currentTime
 		Checksum        = incoming.Checksum
 	}
 
-	bucket [incoming.Id] = finished
+	addFinishedIncoming (key, bucket, incoming.Id, finished)
 
-	enforceFinishedIncomingCap (bucket)
+	enforceFinishedIncomingCap (key, bucket)
 
 	return finished
 end
@@ -1860,7 +1924,8 @@ end
 
 local function failIncoming (peer, bucket, incoming, reason)
 	if bucket then
-		bucket [incoming.Id] = nil
+		local key = peerKey (peer)
+		removeIncoming (key, bucket, incoming.Id)
 	end
 
 	rememberFinishedIncoming (peer, incoming, false, reason)
@@ -1921,7 +1986,8 @@ local function deliverIncoming (peer, bucket, incoming)
 		end
 	end
 
-	bucket [incoming.Id] = nil
+	local key = peerKey (peer)
+	removeIncoming (key, bucket, incoming.Id)
 	rememberFinishedIncoming (peer, incoming, true, "ok")
 
 	if callback then
@@ -2040,7 +2106,7 @@ local function onDataPacket (peer)
 	end
 
 	if not incoming then
-		if countTable (bucket) >= config.MaximumIncomingTransfersPerPeer then
+		if (library.IncomingCounts [key] or 0) >= config.MaximumIncomingTransfersPerPeer then
 			sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Too many incoming transfers. Increase MaximumIncomingTransfersPerPeer or send fewer concurrent transfers.")
 			return
 		end
@@ -2091,7 +2157,7 @@ local function onDataPacket (peer)
 			NextNack         = currentTime + config.NackInterval
 		}
 
-		bucket [transferId] = incoming
+		addIncoming (key, bucket, transferId, incoming)
 		recordPolicyAccepted (key, messageLowerName, policy or {}, currentTime)
 	else
 		if incoming.Mode ~= payloadMode or incoming.Name ~= name or incoming.Compressed ~= compressed or incoming.RawSize ~= rawSize or incoming.PackedSize ~= packedSize or incoming.TotalChunks ~= totalChunks or incoming.Checksum ~= fullChecksum then
@@ -2192,7 +2258,7 @@ local function onCancelPacket (peer)
 		completeTransfer (state, transfer, false, reason ~= "" and reason or "(ChrononLabs-StreamNet): Remote cancel. The remote side cancelled this transfer.")
 	end
 
-	local bucket = getIncomingBucket (peer)
+	local bucket, key = getIncomingBucket (peer)
 
 	if bucket then
 		local incoming = bucket [transferId]
@@ -2201,7 +2267,7 @@ local function onCancelPacket (peer)
 			rememberFinishedIncoming (peer, incoming, false, reason ~= "" and reason or "(ChrononLabs-StreamNet): Remote cancel. The remote side cancelled this transfer.")
 		end
 
-		bucket [transferId] = nil
+		removeIncoming (key, bucket, transferId)
 	end
 end
 
@@ -2269,6 +2335,7 @@ local function flushIncomingMaintenance (currentTime)
 
 		if not valid then
 			library.IncomingStates [key] = nil
+			library.IncomingCounts [key] = nil
 		else
 			for transferId, incoming in pairs (bucket) do
 				if currentTime - incoming.UpdatedAt > config.Timeout then
@@ -2303,18 +2370,20 @@ local function sweepFinishedIncoming (currentTime)
 		local valid = CLIENT or isPlayerValue (peer)
 
 		if not valid then
-			library.FinishedIncoming [key] = nil
+			library.FinishedIncoming [key]       = nil
+			library.FinishedCounts [key] = nil
 		else
 			for transferId, finished in pairs (bucket) do
 				if currentTime >= finished.ExpiresAt then
-					bucket [transferId] = nil
+					removeFinishedIncoming (key, bucket, transferId)
 				end
 			end
 
-			enforceFinishedIncomingCap (bucket)
+			enforceFinishedIncomingCap (key, bucket)
 
 			if not hasAnyEntry (bucket) then
-				library.FinishedIncoming [key] = nil
+				library.FinishedIncoming [key]       = nil
+				library.FinishedCounts [key] = nil
 			end
 		end
 	end
@@ -2650,6 +2719,8 @@ if SERVER then
 		library.OutgoingStates [key]     = nil
 		library.IncomingStates [key]     = nil
 		library.FinishedIncoming [key]   = nil
+		library.IncomingCounts [key]     = nil
+		library.FinishedCounts [key]     = nil
 		library.ReceivePolicyState [key] = nil
 		library.AckPending [key]         = nil
 		library.NackPending [key]        = nil
