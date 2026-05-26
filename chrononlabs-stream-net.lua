@@ -747,20 +747,6 @@ local function readOutgoingState (peer)
 	return library.OutgoingStates [key], key
 end
 
-local function getIncomingBucket (peer)
-	local key = peerKey (peer)
-	if not key then return nil, nil end
-
-	local bucket = library.IncomingStates [key]
-
-	if not bucket then
-		bucket                       = {}
-		library.IncomingStates [key] = bucket
-	end
-
-	return bucket, key
-end
-
 local function canSendToPeer (peer)
 	if CLIENT then return true end
 	if not isPlayerValue (peer) then return false end
@@ -2258,7 +2244,8 @@ local function onCancelPacket (peer)
 		completeTransfer (state, transfer, false, reason ~= "" and reason or "(ChrononLabs-StreamNet): Remote cancel. The remote side cancelled this transfer.")
 	end
 
-	local bucket, key = getIncomingBucket (peer)
+	local key    = peerKey (peer)
+	local bucket = key and library.IncomingStates [key]
 
 	if bucket then
 		local incoming = bucket [transferId]
