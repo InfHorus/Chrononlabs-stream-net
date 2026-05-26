@@ -72,6 +72,8 @@ If a chunk is missing, it can be requested again. If the transfer cannot recover
 
 This makes it useful for systems where partial delivery is not acceptable.
 
+Note about CRC: it catches accidental corruption / mismatch payload, not "malicious" tampering, therefore you should keep validating client data server side always.
+
 ## Installation
 
 Place the file somewhere shared, for example:
@@ -412,6 +414,7 @@ ChrononLabsStreamNet.SetConfig ("BurstBytes", 65536)
 ChrononLabsStreamNet.SetConfig ("Window", 6)
 ChrononLabsStreamNet.SetConfig ("Timeout", 20)
 ChrononLabsStreamNet.SetConfig ("MaximumRetries", 16)
+ChrononLabsStreamNet.SetConfig ("MaximumIncomingBytesPerPeer", 32 * 1024 * 1024)
 ChrononLabsStreamNet.SetConfig ("PriorityAgingInterval", 2)
 ChrononLabsStreamNet.SetConfig ("RequestTimeout", 15)
 ChrononLabsStreamNet.SetConfig ("ResponseMaxBytes", nil)
@@ -902,6 +905,7 @@ ChrononLabsStreamNet.SetConfig ("Compress", true)
 ChrononLabsStreamNet.SetConfig ("CompressAt", 8192)
 ChrononLabsStreamNet.SetConfig ("MaximumPayloadBytes", 8 * 1024 * 1024)
 ChrononLabsStreamNet.SetConfig ("MaximumIncomingTransfersPerPeer", 24)
+ChrononLabsStreamNet.SetConfig ("MaximumIncomingBytesPerPeer", 32 * 1024 * 1024)
 ChrononLabsStreamNet.SetConfig ("MaximumTablePairs", 4096)
 ChrononLabsStreamNet.SetConfig ("MaximumTableDepth", 32)
 ChrononLabsStreamNet.SetConfig ("AckInterval", 0.035)
@@ -918,6 +922,8 @@ ChrononLabsStreamNet.SetConfig ("RequestTimeout", 15)
 ChrononLabsStreamNet.SetConfig ("ResponseMaxBytes", nil)
 ChrononLabsStreamNet.SetConfig ("Debug", false)
 ```
+
+When the server is under load, sending large chunks over the default unreliable path can cause extra resends, if unreliable transfers keep dropping too often you should try lowering the chunk size first. Turning on reliable data can help for smaller transfers or ones that need low latency however keep in mind that big reliable transfers might block other reliable network messages. So use it as a trade‑off, not as the new default.
 
 ### Server sends a large generated payload with every option
 

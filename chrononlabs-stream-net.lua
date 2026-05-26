@@ -24,6 +24,7 @@ ChrononLabsStreamNet  = ChrononLabsStreamNet or {}
 local library         	= ChrononLabsStreamNet
 local channelName     	= "ChrononLabsStreamNet"
 local protocolVersion 	= 3
+local serializerVersion = 4
 local minimumChunkSize 	= 512
 local dataPacketOverhead   = 64
 local headerPacketOverhead = 96
@@ -54,8 +55,8 @@ local tagVector = 7
 local tagAngle  = 8
 local tagColor  = 9
 local tagEntity = 10
+local tagArray  = 11
 
-local mathAbs      = math.abs
 local mathCeil     = math.ceil
 local mathFloor    = math.floor
 local mathFrexp    = math.frexp
@@ -126,6 +127,7 @@ config.Compress                        = config.Compress ~= false
 config.CompressAt                      = config.CompressAt or 8192
 config.MaximumPayloadBytes             = config.MaximumPayloadBytes or 8 * 1024 * 1024
 config.MaximumIncomingTransfersPerPeer = config.MaximumIncomingTransfersPerPeer or 24
+config.MaximumIncomingBytesPerPeer     = config.MaximumIncomingBytesPerPeer or 32 * 1024 * 1024
 config.MaximumTablePairs               = config.MaximumTablePairs or 4096
 config.MaximumTableDepth               = config.MaximumTableDepth or 32
 config.AckInterval                     = config.AckInterval or 0.035
@@ -160,15 +162,22 @@ library.PendingRequests    = library.PendingRequests or {}
 
 -- Auto-refresh support just in case.
 library.IncomingCounts = {}
+library.IncomingBytes  = {}
 for key, bucket in pairs (library.IncomingStates) do
 	local count = 0
+	local bytes = 0
 
-	for _ in pairs (bucket) do
+	for _, incoming in pairs (bucket) do
 		count = count + 1
+		bytes = bytes + (tonumber (incoming.PackedSize) or 0)
 	end
 
 	if count > 0 then
 		library.IncomingCounts [key] = count
+	end
+
+	if bytes > 0 then
+		library.IncomingBytes [key] = bytes
 	end
 end
 
@@ -200,8 +209,7 @@ if SERVER then
 end
 
 local function now ()
-	if RealTime then return RealTime () end
-	return os.clock ()
+	return RealTime ()
 end
 
 local function clamp (numberValue, lowerValue, upperValue)
@@ -257,23 +265,14 @@ local function crc (data)
 	return tonumber (utilCRC (data or "")) or 0
 end
 
--- Before getting any more complaints: I did it this way because from my profiler testings
--- sending one 32 caused a small client frame hitch that doesn't occur with two 16 despite the small theoretical overhead.
 local function writeNetUnsigned32 (numberValue)
 	numberValue = mathFloor (numberValue or 0) % 4294967296
 
-	local lowWord  = numberValue % 65536
-	local highWord = mathFloor (numberValue / 65536) % 65536
-
-	netWriteUInt (lowWord, 16)
-	netWriteUInt (highWord, 16)
+	netWriteUInt (numberValue, 32)
 end
 
 local function readNetUnsigned32 ()
-	local lowWord  = netReadUInt (16)
-	local highWord = netReadUInt (16)
-
-	return lowWord + highWord * 65536
+	return netReadUInt (32)
 end
 
 local function startPacket (packetKind, unreliable)
@@ -372,7 +371,7 @@ end
 local function readString (reader)
 	local length = readUnsigned32 (reader)
 
-	if length < 0 or length > config.MaximumPayloadBytes then
+	if length > config.MaximumPayloadBytes then
 		error ("(ChrononLabs-StreamNet): Decode string length is invalid. Check for corrupted payloads or mismatched library versions.")
 	end
 
@@ -551,7 +550,9 @@ writeValue = function (output, value, depth, seen)
 
 		seen [value] = true
 
-		local pairCount = 0
+		local pairCount   = 0
+		local arrayLength = #value
+		local isArray     = arrayLength > 0
 
 		for key in pairs (value) do
 			pairCount = pairCount + 1
@@ -560,6 +561,24 @@ writeValue = function (output, value, depth, seen)
 				seen [value] = nil
 				error ("(ChrononLabs-StreamNet): Serializer table pair limit exceeded. Increase MaximumTablePairs, or send fewer keys.")
 			end
+
+			if isArray then
+				if type (key) ~= "number" or key ~= mathFloor (key) or key < 1 or key > arrayLength then
+					isArray = false
+				end
+			end
+		end
+
+		if isArray and pairCount == arrayLength then
+			writeUnsigned8 (output, tagArray)
+			writeUnsigned32 (output, arrayLength)
+
+			for arrayIndex = 1, arrayLength do
+				writeValue (output, value [arrayIndex], depth + 1, seen)
+			end
+
+			seen [value] = nil
+			return
 		end
 
 		writeUnsigned8 (output, tagTable)
@@ -629,6 +648,22 @@ readValue = function (reader, depth)
 		return ent
 	end
 
+	if tag == tagArray then
+		local arrayLength = readUnsigned32 (reader)
+
+		if arrayLength > config.MaximumTablePairs then
+			error ("(ChrononLabs-StreamNet): Decode array length limit exceeded. Check MaximumTablePairs and make sure both sides use matching limits.")
+		end
+
+		local output = {}
+
+		for arrayIndex = 1, arrayLength do
+			output [arrayIndex] = readValue (reader, depth + 1)
+		end
+
+		return output
+	end
+
 	if tag == tagTable then
 		local pairCount = readUnsigned32 (reader)
 
@@ -661,7 +696,7 @@ local function encodeArguments (startIndex, ...)
 	end
 
 	local output = { Position = 0 }
-	writeUnsigned8 (output, 3)
+	writeUnsigned8 (output, serializerVersion)
 	writeUnsigned16 (output, argumentCount)
 
 	local seen = {}
@@ -683,7 +718,7 @@ local function decodeArguments (data)
 
 	local version = readUnsigned8 (reader)
 
-	if version ~= 3 then
+	if version ~= serializerVersion then
 		error ("(ChrononLabs-StreamNet): Decode serializer version mismatch. Make sure both sides use the same library version.")
 	end
 
@@ -788,6 +823,7 @@ local function addIncoming (key, bucket, id, incoming)
 
 	if bucket [id] == nil then
 		library.IncomingCounts [key] = (library.IncomingCounts [key] or 0) + 1
+		library.IncomingBytes [key]  = (library.IncomingBytes [key] or 0) + (tonumber (incoming.PackedSize) or 0)
 	end
 
 	bucket [id] = incoming
@@ -797,10 +833,14 @@ local function removeIncoming (key, bucket, id)
 	if not key or not bucket then return end
 
 	if bucket [id] ~= nil then
+		local incoming = bucket [id]
 		bucket [id] = nil
 
 		local count = (library.IncomingCounts [key] or 0) - 1
 		library.IncomingCounts [key] = count > 0 and count or nil
+
+		local bytes = (library.IncomingBytes [key] or 0) - (tonumber (incoming.PackedSize) or 0)
+		library.IncomingBytes [key] = bytes > 0 and bytes or nil
 	end
 end
 
@@ -942,7 +982,7 @@ local function recordPolicyAccepted (key, messageLowerName, policy, currentTime)
 	entry.LastAcceptedAt = currentTime
 end
 
-local function safeChunkSize (name, wantedChunkSize)
+local function safeChunkSize (wantedChunkSize)
 	wantedChunkSize = tonumber (wantedChunkSize) or config.ChunkSize
 
 	local overhead         = dataPacketOverhead
@@ -1100,7 +1140,7 @@ local function prepareTransferPayload (name, payloadMode, payload, options)
 		return false, "(ChrononLabs-StreamNet): Packed payload too large. Reduce or split the payload, or increase MaximumPayloadBytes for trusted transfers."
 	end
 
-	local chunkSize   = safeChunkSize (name, options.ChunkSize)
+	local chunkSize   = safeChunkSize (options.ChunkSize)
 	local totalChunks = mathMax (1, mathCeil (#payload / chunkSize))
 	local priority, priorityName = parsePriority (options.Priority or options.priority)
 
@@ -2125,6 +2165,13 @@ local function onHeaderPacket (peer)
 		return
 	end
 
+	local maximumIncomingBytes = tonumber (config.MaximumIncomingBytesPerPeer)
+
+	if maximumIncomingBytes and maximumIncomingBytes > 0 and (library.IncomingBytes [key] or 0) + packedSize > maximumIncomingBytes then
+		sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Too much incoming data in flight. Increase MaximumIncomingBytesPerPeer or wait for active transfers to finish.")
+		return
+	end
+
 	if policy then
 		if (SERVER and policy.Direction == "server_to_client") or (CLIENT and policy.Direction == "client_to_server") then
 			sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy direction rejected this transfer. Verify the message Direction matches the sender side.")
@@ -2192,9 +2239,6 @@ local function onDataPacket (peer)
 		chunk = netReadData (chunkLength)
 	end
 
-	library.Metrics.ReceivedChunks = library.Metrics.ReceivedChunks + 1
-	library.Metrics.ReceivedBytes  = library.Metrics.ReceivedBytes + chunkLength
-
 	if #chunk ~= chunkLength then return end
 
 	local key = peerKey (peer)
@@ -2227,6 +2271,9 @@ local function onDataPacket (peer)
 		queueNack (peer, transferId, sequence)
 		return
 	end
+
+	library.Metrics.ReceivedChunks = library.Metrics.ReceivedChunks + 1
+	library.Metrics.ReceivedBytes  = library.Metrics.ReceivedBytes + chunkLength
 
 	incoming.UpdatedAt = currentTime
 
@@ -2401,6 +2448,7 @@ local function flushIncomingMaintenance (currentTime)
 		if not valid then
 			library.IncomingStates [key] = nil
 			library.IncomingCounts [key] = nil
+			library.IncomingBytes [key]  = nil
 		else
 			for transferId, incoming in pairs (bucket) do
 				if currentTime - incoming.UpdatedAt > config.Timeout then
@@ -2667,7 +2715,13 @@ function library.GetTransfers (peer)
 		return {}
 	end
 
-	return state.Queue
+	local output = {}
+
+	for transferIndex, transfer in ipairs (state.Queue) do
+		output [transferIndex] = transfer
+	end
+
+	return output
 end
 
 function library.Cancel (transferId, ...)
@@ -2764,7 +2818,6 @@ end)
 if CLIENT then
 	hookAdd ("InitPostEntity", "ChrononLabsStreamNetReady", function ()
 		startPacket (packetReady, false)
-		netWriteUInt (1, 1)
 		sendCurrentPacket (nil)
 	end)
 end
@@ -2785,6 +2838,7 @@ if SERVER then
 		library.IncomingStates [key]     = nil
 		library.FinishedIncoming [key]   = nil
 		library.IncomingCounts [key]     = nil
+		library.IncomingBytes [key]      = nil
 		library.FinishedCounts [key]     = nil
 		library.ReceivePolicyState [key] = nil
 		library.AckPending [key]         = nil
