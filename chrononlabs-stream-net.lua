@@ -1664,6 +1664,8 @@ local function takeSequences (sequenceSet, maximumCount)
 end
 
 local function sendSequenceList (peer, packetKind, transferId, sequences)
+	if SERVER and not isPlayerValue (peer) then return false end
+
 	local sequenceCount = mathMin (#sequences, 255)
 
 	if sequenceCount == 0 then return false end
@@ -1680,6 +1682,8 @@ local function sendSequenceList (peer, packetKind, transferId, sequences)
 end
 
 local function sendCancel (peer, transferId, reason)
+	if SERVER and not isPlayerValue (peer) then return end
+
 	startPacket (packetCancel, false)
 	writeNetUnsigned32 (transferId)
 	netWriteString (tostring (reason or "(ChrononLabs-StreamNet): Cancel. The remote side cancelled this transfer."))
@@ -1687,6 +1691,8 @@ local function sendCancel (peer, transferId, reason)
 end
 
 local function sendComplete (peer, transferId, ok, reason)
+	if SERVER and not isPlayerValue (peer) then return end
+
 	startPacket (packetComplete, false)
 	writeNetUnsigned32 (transferId)
 	netWriteBool (ok == true)
@@ -1770,6 +1776,8 @@ local function timedOutSequence (transfer, currentTime)
 end
 
 local function sendHeader (transfer)
+	if SERVER and not isPlayerValue (transfer.Peer) then return false, 0 end
+
 	startPacket 		(packetHeader, false)
 	writeNetUnsigned32 	(transfer.Id)
 	netWriteUInt 		(transfer.Mode, 2)
@@ -1789,6 +1797,8 @@ local function sendHeader (transfer)
 end
 
 local function sendChunk (state, transfer, sequence, retry)
+	if SERVER and not isPlayerValue (transfer.Peer) then return false, 0 end
+
 	local startPosition = (sequence - 1) * transfer.ChunkSize + 1
 	local endPosition   = mathMin (sequence * transfer.ChunkSize, transfer.PackedSize)
 	local chunk         = stringSub (transfer.Data, startPosition, endPosition)
