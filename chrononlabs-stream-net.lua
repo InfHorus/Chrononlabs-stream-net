@@ -92,7 +92,7 @@ local Angle            = Angle
 local Color            = Color
 local Entity           = Entity
 local NULL             = NULL
-local RealTime         = RealTime
+local SysTime          = SysTime
 local playerIterator   = player and player.Iterator
 local hookAdd          = hook.Add
 local utilCRC          = util.CRC
@@ -209,7 +209,7 @@ if SERVER then
 end
 
 local function now ()
-	return RealTime ()
+	return SysTime ()
 end
 
 local function clamp (numberValue, lowerValue, upperValue)
