@@ -23,8 +23,10 @@ ChrononLabsStreamNet  = ChrononLabsStreamNet or {}
 
 local library         	= ChrononLabsStreamNet
 local channelName     	= "ChrononLabsStreamNet"
-local protocolVersion 	= 2
+local protocolVersion 	= 3
 local minimumChunkSize 	= 512
+local dataPacketOverhead   = 64
+local headerPacketOverhead = 96
 
 local packetData     = 1
 local packetAck      = 2
@@ -32,6 +34,7 @@ local packetNack     = 3
 local packetComplete = 4
 local packetCancel   = 5
 local packetReady    = 6
+local packetHeader   = 7
 
 local modeArguments = 1
 local modeRaw       = 2
@@ -942,7 +945,7 @@ end
 local function safeChunkSize (name, wantedChunkSize)
 	wantedChunkSize = tonumber (wantedChunkSize) or config.ChunkSize
 
-	local overhead         = 160 + #tostring (name or "")
+	local overhead         = dataPacketOverhead
 	local maximumChunkSize = clamp (config.MaximumNetMessageBytes - overhead, minimumChunkSize, 60000)
 
 	return clamp (mathFloor (wantedChunkSize), minimumChunkSize, maximumChunkSize)
@@ -1145,6 +1148,7 @@ local function buildTransferFromPrepared (prepared, peer)
 		Checksum              = prepared.Checksum,
 		ChunkSize             = prepared.ChunkSize,
 		TotalChunks           = prepared.TotalChunks,
+		HeaderSent            = false,
 		NextSequence          = 1,
 		Sent                  = {},
 		Retries               = {},
@@ -1725,6 +1729,25 @@ local function timedOutSequence (transfer, currentTime)
 	return nil
 end
 
+local function sendHeader (transfer)
+	startPacket 		(packetHeader, false)
+	writeNetUnsigned32 	(transfer.Id)
+	netWriteUInt 		(transfer.Mode, 2)
+	netWriteString 		(transfer.Name)
+	netWriteBool 		(transfer.Compressed)
+	writeNetUnsigned32 	(transfer.RawSize)
+	writeNetUnsigned32 	(transfer.PackedSize)
+	writeNetUnsigned32 	(transfer.TotalChunks)
+	writeNetUnsigned32 	(transfer.Checksum)
+
+	if sendCurrentPacket (transfer.Peer) then
+		transfer.HeaderSent = true
+		return true, headerPacketOverhead + #transfer.Name
+	end
+
+	return false, 0
+end
+
 local function sendChunk (state, transfer, sequence, retry)
 	local startPosition = (sequence - 1) * transfer.ChunkSize + 1
 	local endPosition   = mathMin (sequence * transfer.ChunkSize, transfer.PackedSize)
@@ -1733,14 +1756,7 @@ local function sendChunk (state, transfer, sequence, retry)
 
 	startPacket 		(packetData, not transfer.ReliableData)
 	writeNetUnsigned32 	(transfer.Id)
-	netWriteUInt 		(transfer.Mode, 2)
-	netWriteString 		(transfer.Name)
-	netWriteBool 		(transfer.Compressed)
-	writeNetUnsigned32 	(transfer.RawSize)
-	writeNetUnsigned32 	(transfer.PackedSize)
-	writeNetUnsigned32 	(transfer.TotalChunks)
 	writeNetUnsigned32 	(sequence)
-	writeNetUnsigned32 	(transfer.Checksum)
 	writeNetUnsigned32 	(crc (chunk))
 	netWriteUInt 		(chunkLength, 16)
 
@@ -1763,7 +1779,7 @@ local function sendChunk (state, transfer, sequence, retry)
 		library.Metrics.SentChunks = library.Metrics.SentChunks + 1
 		library.Metrics.SentBytes  = library.Metrics.SentBytes + chunkLength
 
-		return true, chunkLength + 160 + #transfer.Name
+		return true, chunkLength + dataPacketOverhead
 	end
 
 	return false, 0
@@ -1783,58 +1799,80 @@ local function pumpTransfer (state, transfer, currentTime)
 	local sentPackets = 0
 
 	while sentPackets < config.MaximumPacketsPerThink do
-		local sequence = popNack (transfer)
-		local retry    = false
+		if not transfer.HeaderSent then
+			local cost = headerPacketOverhead + #transfer.Name
 
-		if sequence then
-			retry = true
+			if state.Budget < cost and sentPackets > 0 then
+				break
+			end
+
+			if state.Budget < 512 and sentPackets == 0 then
+				break
+			end
+
+			local sent, usedBytes = sendHeader (transfer)
+
+			if not sent then
+				completeTransfer (state, transfer, false, "(ChrononLabs-StreamNet): Send failed. Check the target and avoid sending while the peer is disconnecting.")
+				return false
+			end
+
+			state.Budget = mathMax (0, state.Budget - usedBytes)
+			sentPackets  = sentPackets + 1
 		else
-			sequence = timedOutSequence (transfer, currentTime)
+			local sequence = popNack (transfer)
+			local retry    = false
 
 			if sequence then
 				retry = true
-			elseif transfer.InFlightCount < transfer.Window and transfer.NextSequence <= transfer.TotalChunks then
-				sequence              = transfer.NextSequence
-				transfer.NextSequence = transfer.NextSequence + 1
 			else
+				sequence = timedOutSequence (transfer, currentTime)
+
+				if sequence then
+					retry = true
+				elseif transfer.InFlightCount < transfer.Window and transfer.NextSequence <= transfer.TotalChunks then
+					sequence              = transfer.NextSequence
+					transfer.NextSequence = transfer.NextSequence + 1
+				else
+					break
+				end
+			end
+
+			if transfer.Acked [sequence] then
 				break
 			end
+
+			local retryCount = transfer.Retries [sequence] or 0
+
+			if retry and retryCount >= transfer.MaximumRetries then
+				sendCancel (transfer.Peer, transfer.Id, "(ChrononLabs-StreamNet): Maximum retries reached. Increase MaximumRetries or RetryInterval, or reduce transfer pressure.")
+				completeTransfer (state, transfer, false, "(ChrononLabs-StreamNet): Maximum retries reached. Increase MaximumRetries or RetryInterval, or reduce transfer pressure.")
+				return false
+			end
+
+			local startPosition = (sequence - 1) * transfer.ChunkSize + 1
+			local endPosition   = mathMin (sequence * transfer.ChunkSize, transfer.PackedSize)
+			local chunkLength   = mathMax (0, endPosition - startPosition + 1)
+			local cost          = chunkLength + dataPacketOverhead
+
+			if state.Budget < cost and sentPackets > 0 then
+				break
+			end
+
+			if state.Budget < 512 and sentPackets == 0 then
+				break
+			end
+
+			local sent, usedBytes = sendChunk (state, transfer, sequence, retry)
+
+			if not sent then
+				completeTransfer (state, transfer, false, "(ChrononLabs-StreamNet): Send failed. Check the target and avoid sending while the peer is disconnecting.")
+				return false
+			end
+
+			state.Budget = mathMax (0, state.Budget - usedBytes)
+			sentPackets  = sentPackets + 1
 		end
-
-		if transfer.Acked [sequence] then
-			break
-		end
-
-		local retryCount = transfer.Retries [sequence] or 0
-
-		if retry and retryCount >= transfer.MaximumRetries then
-			sendCancel (transfer.Peer, transfer.Id, "(ChrononLabs-StreamNet): Maximum retries reached. Increase MaximumRetries or RetryInterval, or reduce transfer pressure.")
-			completeTransfer (state, transfer, false, "(ChrononLabs-StreamNet): Maximum retries reached. Increase MaximumRetries or RetryInterval, or reduce transfer pressure.")
-			return false
-		end
-
-		local startPosition = (sequence - 1) * transfer.ChunkSize + 1
-		local endPosition   = mathMin (sequence * transfer.ChunkSize, transfer.PackedSize)
-		local chunkLength   = mathMax (0, endPosition - startPosition + 1)
-		local cost          = chunkLength + 160 + #transfer.Name
-
-		if state.Budget < cost and sentPackets > 0 then
-			break
-		end
-
-		if state.Budget < 512 and sentPackets == 0 then
-			break
-		end
-
-		local sent, usedBytes = sendChunk (state, transfer, sequence, retry)
-
-		if not sent then
-			completeTransfer (state, transfer, false, "(ChrononLabs-StreamNet): Send failed. Check the target and avoid sending while the peer is disconnecting.")
-			return false
-		end
-
-		state.Budget = mathMax (0, state.Budget - usedBytes)
-		sentPackets  = sentPackets + 1
 	end
 
 	emitProgress (transfer, currentTime, false)
@@ -2015,7 +2053,23 @@ local function deliverIncoming (peer, bucket, incoming)
 	library.Metrics.Completed = library.Metrics.Completed + 1
 end
 
-local function onDataPacket (peer)
+local function resendFinishedControl (peer, transferId, finished, sequence, currentTime)
+	if finished.Ok then
+		if sequence then
+			queueAck (peer, transferId, sequence)
+		end
+
+		if currentTime - (finished.LastControlSent or 0) >= config.FinishedControlResendInterval then
+			sendComplete (peer, transferId, true, "ok")
+			finished.LastControlSent = currentTime
+		end
+	elseif currentTime - (finished.LastControlSent or 0) >= config.FinishedControlResendInterval then
+		sendCancel (peer, transferId, finished.Reason ~= "" and finished.Reason or "(ChrononLabs-StreamNet): Transfer failed. Retry later or reduce transfer pressure.")
+		finished.LastControlSent = currentTime
+	end
+end
+
+local function onHeaderPacket (peer)
 	local currentTime   = now ()
 	local transferId    = readNetUnsigned32 ()
 	local payloadMode   = netReadUInt 		(2)
@@ -2024,8 +2078,112 @@ local function onDataPacket (peer)
 	local rawSize       = readNetUnsigned32 ()
 	local packedSize    = readNetUnsigned32 ()
 	local totalChunks   = readNetUnsigned32 ()
-	local sequence      = readNetUnsigned32 ()
 	local fullChecksum  = readNetUnsigned32 ()
+
+	if name == "" or #name > 128 then return end
+	if payloadMode ~= modeArguments and payloadMode ~= modeRaw then return end
+	if rawSize > config.MaximumPayloadBytes or packedSize > config.MaximumPayloadBytes then return end
+	if totalChunks < 1 or totalChunks > maximumChunksForPackedSize (packedSize) then return end
+
+	local key = peerKey (peer)
+	if not key then return end
+
+	local finishedBucket = library.FinishedIncoming [key]
+	local finished       = finishedBucket and finishedBucket [transferId]
+
+	if finished and metadataMatchesFinished (finished, payloadMode, name, compressed, rawSize, packedSize, totalChunks, fullChecksum) then
+		resendFinishedControl (peer, transferId, finished, nil, currentTime)
+
+		return
+	elseif finished then
+		sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Metadata mismatch. Make sure transfer IDs are not reused with different metadata.")
+
+		return
+	end
+
+	local messageLowerName = lowerName (name)
+	local policy           = library.ReceivePolicies [messageLowerName]
+	local bucket           = library.IncomingStates [key]
+	local incoming         = bucket and bucket [transferId]
+
+	if incoming then
+		if incoming.Mode ~= payloadMode or incoming.Name ~= name or incoming.Compressed ~= compressed or incoming.RawSize ~= rawSize or incoming.PackedSize ~= packedSize or incoming.TotalChunks ~= totalChunks or incoming.Checksum ~= fullChecksum then
+			failIncoming (peer, bucket, incoming, "(ChrononLabs-StreamNet): Metadata mismatch. Make sure transfer IDs are not reused with different metadata.")
+		end
+
+		return
+	end
+
+	if not library.Handlers [messageLowerName] then
+		sendCancel (peer, transferId, "(ChrononLabs-StreamNet): No receiver registered for this message.")
+
+		return
+	end
+
+	if (library.IncomingCounts [key] or 0) >= config.MaximumIncomingTransfersPerPeer then
+		sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Too many incoming transfers. Increase MaximumIncomingTransfersPerPeer or send fewer concurrent transfers.")
+		return
+	end
+
+	if policy then
+		if (SERVER and policy.Direction == "server_to_client") or (CLIENT and policy.Direction == "client_to_server") then
+			sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy direction rejected this transfer. Verify the message Direction matches the sender side.")
+			return
+		end
+
+		if SERVER and policy.RequireReady and isPlayerValue (peer) and library.ReadyPlayers [peer:UserID ()] ~= true then
+			sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy requires the client to be ready. Wait until the client finishes joining before sending.")
+			return
+		end
+
+		if policy.MaxBytes and rawSize > policy.MaxBytes then
+			sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy byte limit exceeded. Increase MaxBytes or send less data.")
+			return
+		end
+
+		if policy.MaxInFlight and bucket and countIncomingByName (bucket, messageLowerName) >= policy.MaxInFlight then
+			sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy in-flight limit exceeded. Increase MaxInFlight or wait for the previous transfer to finish.")
+			return
+		end
+
+		if policyCooldownActive (key, messageLowerName, policy, currentTime) then
+			sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy cooldown active. Wait before sending this message again.")
+			return
+		end
+	end
+
+	if not bucket then
+		bucket                       = {}
+		library.IncomingStates [key] = bucket
+	end
+
+	incoming = {
+		Id            = transferId,
+		Mode          = payloadMode,
+		Name          = name,
+		LowerName     = messageLowerName,
+		Compressed    = compressed,
+		RawSize       = rawSize,
+		PackedSize    = packedSize,
+		TotalChunks   = totalChunks,
+		Checksum      = fullChecksum,
+		Chunks        = {},
+		Received      = 0,
+		ReceivedBytes = 0,
+		CreatedAt     = currentTime,
+		UpdatedAt     = currentTime,
+		NextNackSequence = 1,
+		NextNack         = currentTime + config.NackInterval
+	}
+
+	addIncoming (key, bucket, transferId, incoming)
+	recordPolicyAccepted (key, messageLowerName, policy or {}, currentTime)
+end
+
+local function onDataPacket (peer)
+	local currentTime   = now ()
+	local transferId    = readNetUnsigned32 ()
+	local sequence      = readNetUnsigned32 ()
 	local chunkChecksum = readNetUnsigned32 ()
 	local chunkLength   = netReadUInt 		(16)
 	local chunk         = ""
@@ -2037,126 +2195,37 @@ local function onDataPacket (peer)
 	library.Metrics.ReceivedChunks = library.Metrics.ReceivedChunks + 1
 	library.Metrics.ReceivedBytes  = library.Metrics.ReceivedBytes + chunkLength
 
-	if name == "" or #name > 128 then return end
-	if payloadMode ~= modeArguments and payloadMode ~= modeRaw then return end
-	if rawSize > config.MaximumPayloadBytes or packedSize > config.MaximumPayloadBytes then return end
-	if totalChunks < 1 or totalChunks > maximumChunksForPackedSize (packedSize) then return end
-	if sequence < 1 or sequence > totalChunks then return end
 	if #chunk ~= chunkLength then return end
 
-	if packedSize == 0 then
-		if totalChunks ~= 1 or sequence ~= 1 or chunkLength ~= 0 then return end
+	local key = peerKey (peer)
+	if not key then return end
+
+	local bucket   = library.IncomingStates [key]
+	local incoming = bucket and bucket [transferId]
+
+	if not incoming then
+		local finishedBucket = library.FinishedIncoming [key]
+		local finished       = finishedBucket and finishedBucket [transferId]
+
+		if finished then
+			resendFinishedControl (peer, transferId, finished, sequence, currentTime)
+		end
+
+		return
+	end
+
+	if sequence < 1 or sequence > incoming.TotalChunks then return end
+
+	if incoming.PackedSize == 0 then
+		if incoming.TotalChunks ~= 1 or sequence ~= 1 or chunkLength ~= 0 then return end
 	else
 		if chunkLength == 0 then return end
-		if chunkLength > packedSize then return end
+		if chunkLength > incoming.PackedSize then return end
 	end
 
 	if crc (chunk) ~= chunkChecksum then
 		queueNack (peer, transferId, sequence)
 		return
-	end
-
-	local key = peerKey (peer)
-	if not key then return end
-
-	local finishedBucket = library.FinishedIncoming [key]
-	local finished       = finishedBucket and finishedBucket [transferId]
-
-	if finished and metadataMatchesFinished (finished, payloadMode, name, compressed, rawSize, packedSize, totalChunks, fullChecksum) then
-		if finished.Ok then
-			queueAck (peer, transferId, sequence)
-
-			if currentTime - (finished.LastControlSent or 0) >= config.FinishedControlResendInterval then
-				sendComplete (peer, transferId, true, "ok")
-				finished.LastControlSent = currentTime
-			end
-		elseif currentTime - (finished.LastControlSent or 0) >= config.FinishedControlResendInterval then
-			sendCancel (peer, transferId, finished.Reason ~= "" and finished.Reason or "(ChrononLabs-StreamNet): Transfer failed. Retry later or reduce transfer pressure.")
-			finished.LastControlSent = currentTime
-		end
-
-		return
-	end
-
-	local messageLowerName = lowerName (name)
-	local policy           = library.ReceivePolicies [messageLowerName]
-	local bucket           = library.IncomingStates [key]
-	local incoming         = bucket and bucket [transferId]
-
-	if not library.Handlers [messageLowerName] then
-		if incoming then
-			failIncoming (peer, bucket, incoming, "(ChrononLabs-StreamNet): No receiver registered for this message.")
-		else
-			sendCancel (peer, transferId, "(ChrononLabs-StreamNet): No receiver registered for this message.")
-		end
-
-		return
-	end
-
-	if not bucket then
-		bucket                       = {}
-		library.IncomingStates [key] = bucket
-	end
-
-	if not incoming then
-		if (library.IncomingCounts [key] or 0) >= config.MaximumIncomingTransfersPerPeer then
-			sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Too many incoming transfers. Increase MaximumIncomingTransfersPerPeer or send fewer concurrent transfers.")
-			return
-		end
-
-		if policy then
-			if (SERVER and policy.Direction == "server_to_client") or (CLIENT and policy.Direction == "client_to_server") then
-				sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy direction rejected this transfer. Verify the message Direction matches the sender side.")
-				return
-			end
-
-			if SERVER and policy.RequireReady and isPlayerValue (peer) and library.ReadyPlayers [peer:UserID ()] ~= true then
-				sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy requires the client to be ready. Wait until the client finishes joining before sending.")
-				return
-			end
-
-			if policy.MaxBytes and rawSize > policy.MaxBytes then
-				sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy byte limit exceeded. Increase MaxBytes or send less data.")
-				return
-			end
-
-			if policy.MaxInFlight and countIncomingByName (bucket, messageLowerName) >= policy.MaxInFlight then
-				sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy in-flight limit exceeded. Increase MaxInFlight or wait for the previous transfer to finish.")
-				return
-			end
-
-			if policyCooldownActive (key, messageLowerName, policy, currentTime) then
-				sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy cooldown active. Wait before sending this message again.")
-				return
-			end
-		end
-
-		incoming = {
-			Id            = transferId,
-			Mode          = payloadMode,
-			Name          = name,
-			LowerName     = messageLowerName,
-			Compressed    = compressed,
-			RawSize       = rawSize,
-			PackedSize    = packedSize,
-			TotalChunks   = totalChunks,
-			Checksum      = fullChecksum,
-			Chunks        = {},
-			Received      = 0,
-			ReceivedBytes = 0,
-			CreatedAt     = currentTime,
-			UpdatedAt     = currentTime,
-			NextNackSequence = 1,
-			NextNack         = currentTime + config.NackInterval
-		}
-
-		addIncoming (key, bucket, transferId, incoming)
-		recordPolicyAccepted (key, messageLowerName, policy or {}, currentTime)
-	else
-		if incoming.Mode ~= payloadMode or incoming.Name ~= name or incoming.Compressed ~= compressed or incoming.RawSize ~= rawSize or incoming.PackedSize ~= packedSize or incoming.TotalChunks ~= totalChunks or incoming.Checksum ~= fullChecksum then
-			failIncoming (peer, bucket, incoming, "(ChrononLabs-StreamNet): Metadata mismatch. Make sure transfer IDs are not reused with different metadata.")
-			return
-		end
 	end
 
 	incoming.UpdatedAt = currentTime
@@ -2278,7 +2347,9 @@ netReceive (channelName, function (length, ply)
 
 	if version ~= protocolVersion then return end
 
-	if packetKind == packetData then
+	if packetKind == packetHeader then
+		onHeaderPacket (peer)
+	elseif packetKind == packetData then
 		onDataPacket (peer)
 	elseif packetKind == packetAck then
 		onAckPacket (peer)
