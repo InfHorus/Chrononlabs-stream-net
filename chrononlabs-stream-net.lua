@@ -1353,11 +1353,106 @@ local function enqueuePreparedTransfer (prepared, target)
 	return transfer.Id, transfer
 end
 
+local function recordAggregateCompletion (aggregate, aggregateGuard, onAllComplete, resultIndex, peer, transferId, ok, reason)
+	local result = {
+		Peer   = peer,
+		Id     = transferId,
+		Ok     = ok == true,
+		Reason = tostring (reason or "")
+	}
+
+	aggregate.Results [resultIndex] = result
+	aggregate.Reported = aggregate.Reported + 1
+
+	if result.Ok then
+		aggregate.Completed = aggregate.Completed + 1
+	else
+		aggregate.Failed = aggregate.Failed + 1
+	end
+
+	if aggregate.Reported >= aggregate.Total and not aggregateGuard.Done then
+		aggregateGuard.Done = true
+
+		local callbackOk, callbackError = pcall (onAllComplete, aggregate)
+
+		if not callbackOk then
+			ErrorNoHalt ("(ChrononLabs-StreamNet): OnAllComplete error: " .. tostring (callbackError) .. ". Fix the OnAllComplete callback for this transfer group.\n")
+		end
+	end
+end
+
+local function wrapAggregateCompletion (transfer, aggregate, aggregateGuard, onAllComplete, resultIndex, peer, transferId)
+	local originalCallback = transfer.Callback
+
+	transfer.Callback = function (ok, reason, transferSnapshot)
+		if originalCallback then
+			local callbackOk, callbackError = pcall (originalCallback, ok, reason, transferSnapshot)
+
+			if not callbackOk then
+				ErrorNoHalt ("(ChrononLabs-StreamNet): OnComplete error: " .. tostring (callbackError) .. ". Fix the OnComplete callback for this transfer.\n")
+			end
+		end
+
+		recordAggregateCompletion (aggregate, aggregateGuard, onAllComplete, resultIndex, peer, transferId, ok, reason)
+	end
+end
+
+local function enqueuePreparedTargets (prepared, targets, onAllComplete)
+	local ids = {}
+	local queuedTransfers = {}
+
+	for targetIndex, ply in ipairs (targets) do
+		local id, result = enqueuePreparedTransfer (prepared, ply)
+
+		if not id then
+			return false, result
+		end
+
+		ids [#ids + 1] = id
+
+		if onAllComplete then
+			queuedTransfers [#queuedTransfers + 1] = {
+				Transfer = result,
+				Peer     = ply,
+				Id       = id,
+				Index    = targetIndex
+			}
+		end
+	end
+
+	if onAllComplete then
+		local aggregateGuard = {}
+		local aggregate = {
+			Total     = #queuedTransfers,
+			Reported  = 0,
+			Completed = 0,
+			Failed    = 0,
+			Results   = {}
+		}
+
+		for queuedIndex, queued in ipairs (queuedTransfers) do
+			wrapAggregateCompletion (queued.Transfer, aggregate, aggregateGuard, onAllComplete, queued.Index, queued.Peer, queued.Id)
+		end
+	end
+
+	if #ids == 1 then
+		return ids [1]
+	end
+
+	return ids
+end
+
 local function sendToTargets (name, target, payloadMode, payload, options)
 	if CLIENT then
 		local id, result = enqueueTransfer (name, nil, payloadMode, payload, options)
 		if not id then return false, result end
 		return id
+	end
+
+	local onAllComplete = options and (options.OnAllComplete or options.onAllComplete)
+
+	if type (onAllComplete) ~= "function" then
+		onAllComplete = nil
 	end
 
 	if target == nil or target == true then
@@ -1379,23 +1474,7 @@ local function sendToTargets (name, target, payloadMode, payload, options)
 			return false, errorMessage
 		end
 
-		local ids = {}
-
-		for targetIndex, ply in ipairs (targets) do
-			local id, result = enqueuePreparedTransfer (prepared, ply)
-
-			if not id then
-				return false, result
-			end
-
-			ids [#ids + 1] = id
-		end
-
-		if #ids == 1 then
-			return ids [1]
-		end
-
-		return ids
+		return enqueuePreparedTargets (prepared, targets, onAllComplete)
 	end
 
 	if isPlayerValue (target) then
@@ -1431,23 +1510,7 @@ local function sendToTargets (name, target, payloadMode, payload, options)
 			return false, errorMessage
 		end
 
-		local ids = {}
-
-		for targetIndex, ply in ipairs (targets) do
-			local id, result = enqueuePreparedTransfer (prepared, ply)
-
-			if not id then
-				return false, result
-			end
-
-			ids [#ids + 1] = id
-		end
-
-		if #ids == 1 then
-			return ids [1]
-		end
-
-		return ids
+		return enqueuePreparedTargets (prepared, targets, onAllComplete)
 	end
 
 	return false, "(ChrononLabs-StreamNet): No valid targets. Pass at least one valid player target."
@@ -2896,6 +2959,20 @@ function library.Broadcast (name, ...)
 	local payload = encodeArguments (1, ...)
 
 	return sendToTargets (name, nil, modeArguments, payload, nil)
+end
+
+function library.BroadcastEx (name, ...)
+	if not SERVER then
+		return false, "(ChrononLabs-StreamNet): BroadcastEx is server only. Use SendEx from the client or call BroadcastEx on the server."
+	end
+
+	local valid, errorMessage = validatePublicMessageName (name)
+	if not valid then return false, errorMessage end
+
+	local options = resolveProfileOptions (select (1, ...)) or {}
+	local payload = encodeArguments (2, ...)
+
+	return sendToTargets (name, nil, modeArguments, payload, options)
 end
 
 function library.GetTransfer (transferId, peer)

@@ -25,7 +25,7 @@ Instead of writing a custom chunking and retry system in every project, you get 
 ## Main advantages
 
 - Single-file library that can live in one shared autorun file.
-- Unified API with `Receive`, `Send`, `SendEx`, `SendRaw`, `Broadcast`, `Request`, and `Respond`.
+- Unified API with `Receive`, `Send`, `SendEx`, `SendRaw`, `Broadcast`, `BroadcastEx`, `Request`, and `Respond`.
 - Two-way networking for client to server and server to client messages.
 - Works for small addon messages, large payloads, and file-like transfers.
 - Cleaner structure than manually managing `net.Start`, `net.Write*`, and `net.Receive`.
@@ -257,11 +257,24 @@ Use `SendRaw` when you already have bytes, JSON, compressed data, file data, or 
 
 Use `Broadcast` when the server sends the same structured message to every player.
 
+Use `BroadcastEx` when a broadcast needs options, profiles, or `OnAllComplete`.
+
 Use `Request` and `Respond` when one side needs to ask one peer for a result.
 
 Use a receive policy when the message needs safety limits.
 
 Use `OnProgress` with `Cancel` when a transfer should be shown in a UI or stopped by the user.
+
+For server multi-target `SendEx` or `SendRaw` calls, `OnAllComplete` fires after every resolved target finishes:
+
+```lua
+ChrononLabsStreamNet.SendEx ("BigConfig", players, {
+    OnAllComplete = function (summary)
+        print ("Done:", summary.Completed, "failed:", summary.Failed)
+        PrintTable (summary.Results)
+    end
+}, configTable)
+```
 
 ## Profiles
 
@@ -294,7 +307,7 @@ ChrononLabsStreamNet.DefineProfile ("LargeState", {
 ChrononLabsStreamNet.SendEx ("InventoryState", ply, "LargeState", data)
 ```
 
-`Receive`, `SendEx`, `SendRaw`, `Request`, and `Respond` can take a profile name where they normally take a policy/options table. `Send` and `Broadcast` don't take profiles because those calls don't have an options slot.
+`Receive`, `SendEx`, `SendRaw`, `BroadcastEx`, `Request`, and `Respond` can take a profile name where they normally take a policy/options table. `Send` and `Broadcast` don't take profiles because those calls don't have an options slot.
 
 ## Receive policy
 
@@ -355,6 +368,12 @@ ChrononLabsStreamNet.Broadcast ("GlobalAnnouncement", {
     Title = "Server Update",
     Message = "A new system has been loaded."
 })
+
+ChrononLabsStreamNet.BroadcastEx ("GlobalConfig", {
+    OnAllComplete = function (summary)
+        print ("Broadcast done:", summary.Completed, "failed:", summary.Failed)
+    end
+}, configTable)
 ```
 
 ## Sending raw binary data
