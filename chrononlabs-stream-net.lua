@@ -1249,6 +1249,7 @@ local function prepareTransferPayload (name, payloadMode, payload, options)
 		PackedSize            = #payload,
 		Compressed            = compressed,
 		Checksum              = crc (payload),
+		ChunkChecksums        = {},
 		ChunkSize             = chunkSize,
 		TotalChunks           = totalChunks,
 		RetryInterval         = tonumber (options.RetryInterval) or config.RetryInterval,
@@ -1278,6 +1279,7 @@ local function buildTransferFromPrepared (prepared, peer)
 		PackedSize            = prepared.PackedSize,
 		Compressed            = prepared.Compressed,
 		Checksum              = prepared.Checksum,
+		ChunkChecksums        = prepared.ChunkChecksums,
 		ChunkSize             = prepared.ChunkSize,
 		TotalChunks           = prepared.TotalChunks,
 		HeaderSent            = false,
@@ -1960,6 +1962,18 @@ local function sendHeader (transfer)
 	return false, 0
 end
 
+local function chunkChecksum (transfer, sequence, chunk)
+	local checksums = transfer.ChunkChecksums
+	local checksum  = checksums [sequence]
+
+	if checksum == nil then
+		checksum = crc (chunk)
+		checksums [sequence] = checksum
+	end
+
+	return checksum
+end
+
 local function sendChunk (state, transfer, sequence, retry)
 	if SERVER and not isPlayerValue (transfer.Peer) then return false, 0 end
 
@@ -1971,7 +1985,7 @@ local function sendChunk (state, transfer, sequence, retry)
 	startPacket 		(packetData, not transfer.ReliableData)
 	writeNetUnsigned32 	(transfer.Id)
 	writeNetUnsigned32 	(sequence)
-	writeNetUnsigned32 	(crc (chunk))
+	writeNetUnsigned32 	(chunkChecksum (transfer, sequence, chunk))
 	netWriteUInt 		(chunkLength, 16)
 
 	if chunkLength > 0 then
@@ -3017,6 +3031,14 @@ function library.ResetMetrics ()
 	return library
 end
 
+local function failOutgoingState (state, reason)
+	if not state then return end
+
+	for _, transfer in ipairs (state.Queue) do
+		completeTransfer (state, transfer, false, reason)
+	end
+end
+
 library.On       = library.Receive
 library.Register = library.Receive
 
@@ -3046,6 +3068,7 @@ if SERVER then
 		local key = ply:UserID ()
 
 		failPendingRequestsForPeer (ply, "disconnected")
+		failOutgoingState (library.OutgoingStates [key], "disconnected")
 
 		library.OutgoingStates [key]     = nil
 		library.IncomingStates [key]     = nil
