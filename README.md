@@ -424,6 +424,8 @@ ChrononLabsStreamNet.SetConfig ("RequestTimeout", 15)
 ChrononLabsStreamNet.SetConfig ("ResponseMaxBytes", nil)
 ```
 
+`BytesPerSecond` and `BurstBytes` are per player.
+
 ## Stats
 
 The library includes a simple console command:
