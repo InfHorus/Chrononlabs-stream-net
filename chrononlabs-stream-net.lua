@@ -962,11 +962,58 @@ local function policyCooldownActive (key, messageLowerName, policy, currentTime)
 	local stateForPeer = library.ReceivePolicyState [key]
 	local entry        = stateForPeer and stateForPeer [messageLowerName]
 
-	return entry and currentTime - entry.LastAcceptedAt < policy.Cooldown
+	return entry and entry.LastAcceptedAt and currentTime - entry.LastAcceptedAt < policy.Cooldown
+end
+
+local function policyUsergroupAllowed (peer, policy)
+	local requiredGroup = policy.RequireUsergroup
+	if not requiredGroup then return true end
+	if CLIENT then return true end
+	if not isPlayerValue (peer) then return false end
+
+	if requiredGroup == "admin" then
+		return peer.IsAdmin and peer:IsAdmin () == true
+	end
+
+	if requiredGroup == "superadmin" then
+		return peer.IsSuperAdmin and peer:IsSuperAdmin () == true
+	end
+
+	return peer.GetUserGroup and lowerName (peer:GetUserGroup ()) == requiredGroup
+end
+
+local function policyWindowActive (key, messageLowerName, policy, currentTime)
+	local windowPolicy = policy.MaxPerWindow
+	if not windowPolicy then return false end
+
+	local stateForPeer = library.ReceivePolicyState [key]
+	local entry        = stateForPeer and stateForPeer [messageLowerName]
+	local accepts      = entry and entry.WindowAccepts
+
+	if not accepts then return false end
+
+	local cutoff      = currentTime - windowPolicy.Window
+	local writeIndex  = 1
+	local acceptCount = #accepts
+
+	for readIndex = 1, acceptCount do
+		local acceptedAt = accepts [readIndex]
+
+		if acceptedAt and acceptedAt > cutoff then
+			accepts [writeIndex] = acceptedAt
+			writeIndex = writeIndex + 1
+		end
+	end
+
+	for clearIndex = acceptCount, writeIndex, -1 do
+		accepts [clearIndex] = nil
+	end
+
+	return #accepts >= windowPolicy.Limit
 end
 
 local function recordPolicyAccepted (key, messageLowerName, policy, currentTime)
-	if not policy.Cooldown then return end
+	if not policy.Cooldown and not policy.MaxPerWindow then return end
 
 	local stateForPeer = library.ReceivePolicyState [key]
 
@@ -982,7 +1029,20 @@ local function recordPolicyAccepted (key, messageLowerName, policy, currentTime)
 		stateForPeer [messageLowerName] = entry
 	end
 
-	entry.LastAcceptedAt = currentTime
+	if policy.Cooldown then
+		entry.LastAcceptedAt = currentTime
+	end
+
+	if policy.MaxPerWindow then
+		local accepts = entry.WindowAccepts
+
+		if not accepts then
+			accepts = {}
+			entry.WindowAccepts = accepts
+		end
+
+		accepts [#accepts + 1] = currentTime
+	end
 end
 
 local function safeChunkSize (wantedChunkSize)
@@ -1104,12 +1164,41 @@ local function normalizeReceivePolicy (policy)
 		assert (cooldown and cooldown >= 0, "(ChrononLabs-StreamNet): Receive policy Cooldown is invalid. Use zero or a positive number.")
 	end
 
+	local requireUsergroup = policy.RequireUsergroup or policy.requireUsergroup
+
+	if requireUsergroup ~= nil then
+		assert (type (requireUsergroup) == "string" and requireUsergroup ~= "", "(ChrononLabs-StreamNet): Receive policy RequireUsergroup is invalid. Use a non-empty usergroup string.")
+		requireUsergroup = lowerName (requireUsergroup)
+	end
+
+	local maxPerWindow = policy.MaxPerWindow or policy.maxPerWindow
+
+	if maxPerWindow ~= nil then
+		assert (type (maxPerWindow) == "table", "(ChrononLabs-StreamNet): Receive policy MaxPerWindow is invalid. Use a table with Limit and Window.")
+
+		local limit = maxPerWindow.Limit or maxPerWindow.limit
+		local window = maxPerWindow.Window or maxPerWindow.window
+
+		limit = tonumber (limit)
+		window = tonumber (window)
+
+		assert (limit and limit >= 1 and mathFloor (limit) == limit, "(ChrononLabs-StreamNet): Receive policy MaxPerWindow Limit is invalid. Use a positive integer.")
+		assert (window and window > 0, "(ChrononLabs-StreamNet): Receive policy MaxPerWindow Window is invalid. Use a positive number.")
+
+		maxPerWindow = {
+			Limit  = mathFloor (limit),
+			Window = window
+		}
+	end
+
 	return {
-		Direction    = direction,
-		MaxBytes     = maxBytes,
-		MaxInFlight  = maxInFlight,
-		Cooldown     = cooldown,
-		RequireReady = policy.RequireReady == true or policy.requireReady == true
+		Direction        = direction,
+		MaxBytes         = maxBytes,
+		MaxInFlight      = maxInFlight,
+		Cooldown         = cooldown,
+		RequireReady     = policy.RequireReady == true or policy.requireReady == true,
+		RequireUsergroup = requireUsergroup,
+		MaxPerWindow     = maxPerWindow
 	}
 end
 
@@ -2268,6 +2357,11 @@ local function onHeaderPacket (peer)
 			return
 		end
 
+		if not policyUsergroupAllowed (peer, policy) then
+			sendHeaderRejectCancel (peer, key, transferId, "(ChrononLabs-StreamNet): Receive policy usergroup rejected this transfer. Check RequireUsergroup before sending this message.", currentTime)
+			return
+		end
+
 		if policy.MaxBytes and rawSize > policy.MaxBytes then
 			sendHeaderRejectCancel (peer, key, transferId, "(ChrononLabs-StreamNet): Receive policy byte limit exceeded. Increase MaxBytes or send less data.", currentTime)
 			return
@@ -2280,6 +2374,11 @@ local function onHeaderPacket (peer)
 
 		if policyCooldownActive (key, messageLowerName, policy, currentTime) then
 			sendHeaderRejectCancel (peer, key, transferId, "(ChrononLabs-StreamNet): Receive policy cooldown active. Wait before sending this message again.", currentTime)
+			return
+		end
+
+		if policyWindowActive (key, messageLowerName, policy, currentTime) then
+			sendHeaderRejectCancel (peer, key, transferId, "(ChrononLabs-StreamNet): Receive policy window limit active. Wait before sending this message again.", currentTime)
 			return
 		end
 	end

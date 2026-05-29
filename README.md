@@ -60,6 +60,8 @@ Instead of writing a custom chunking and retry system in every project, you get 
 - Receive `MaxInFlight` policies to limit active incoming transfers per peer and message.
 - Receive `Cooldown` policies to limit how often one peer can start the same message.
 - Receive `RequireReady` policies to wait until a joining client has sent the internal ready signal.
+- Receive `RequireUsergroup` policies to require admin, superadmin, or a custom usergroup before server handlers run.
+- Receive `MaxPerWindow` policies to limit accepted transfer starts per peer and message over a sliding time window.
 - Useful for basic addons, advanced systems, admin tools, anticheat systems, AI telemetry, save systems, and file-like transfers.
 
 ## Delivery model
@@ -120,12 +122,10 @@ ChrononLabsStreamNet.Receive ("AvatarUpload", {
     MaxBytes = 256 * 1024,
     MaxInFlight = 1,
     Cooldown = 5,
-    RequireReady = true
+    RequireReady = true,
+    RequireUsergroup = "admin",
+    MaxPerWindow = { Limit = 3, Window = 60 }
 }, function (ply, bytes)
-    if not ply:IsAdmin () then
-        return
-    end
-
     print ("Avatar upload from", ply, "bytes:", #bytes)
 end)
 ```
@@ -306,7 +306,9 @@ ChrononLabsStreamNet.Receive ("UploadAvatar", {
     MaxBytes = 256 * 1024,
     MaxInFlight = 1,
     Cooldown = 5,
-    RequireReady = true
+    RequireReady = true,
+    RequireUsergroup = "admin",
+    MaxPerWindow = { Limit = 3, Window = 60 }
 }, function (ply, data)
     print ("Avatar upload:", ply, #data)
 end)
@@ -319,6 +321,8 @@ All receive policy fields are optional.
 - `MaxInFlight` limits active incoming transfers for that message per peer.
 - `Cooldown` limits how often that message can be accepted per peer.
 - `RequireReady` makes the server wait until the client has finished joining before accepting that message.
+- `RequireUsergroup` is enforced server-side for client-to-server messages. `admin` uses `Player:IsAdmin()`, `superadmin` uses `Player:IsSuperAdmin()`, and custom groups compare case-insensitively with `Player:GetUserGroup()`.
+- `MaxPerWindow` limits accepted transfer starts per peer and message over a sliding time window.
 
 ## Sending tables
 
