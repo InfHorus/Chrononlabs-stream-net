@@ -2959,6 +2959,16 @@ function library.SetConfig (key, value)
 	return library
 end
 
+local function snapshotMetrics ()
+	local output = {}
+
+	for key, value in pairs (library.Metrics) do
+		output [key] = value
+	end
+
+	return output
+end
+
 function library.GetStats ()
 	local outgoingTransfers      = 0
 	local outgoingUnackedChunks  = 0
@@ -2995,8 +3005,16 @@ function library.GetStats ()
 		OutgoingUnackedChunks  = outgoingUnackedChunks,
 		OutgoingBytesRemaining = outgoingBytesRemaining,
 		IncomingTransfers      = incomingTransfers,
-		Metrics                = library.Metrics
+		Metrics                = snapshotMetrics ()
 	}
+end
+
+function library.ResetMetrics ()
+	for key in pairs (library.Metrics) do
+		library.Metrics [key] = 0
+	end
+
+	return library
 end
 
 library.On       = library.Receive

@@ -50,7 +50,7 @@ Instead of writing a custom chunking and retry system in every project, you get 
 - Request/response helpers with correlation, timeout, duplicate-reply protection, and fast failure.
 - Outgoing transfer lookup with `GetTransfer` and `GetTransfers`.
 - Outgoing transfer cancellation with `Cancel`.
-- Runtime stats with `GetStats` and `chrononlabs_streamnet_stats`.
+- Runtime stats with `GetStats`, `ResetMetrics`, and `chrononlabs_streamnet_stats`.
 - Optional client-ready queueing with `QueueUntilClientReady`.
 - Helpful error messages that include short fixes when something is misconfigured.
 - Reusable profiles for receive policies and send options.
@@ -438,7 +438,13 @@ You can also access stats manually:
 PrintTable (ChrononLabsStreamNet.GetStats ())
 ```
 
-Stats now include active outgoing transfers, unacknowledged chunks, remaining outgoing bytes, active incoming transfers, and lifetime metrics. (Very useful for UI / live updates)
+Stats now include active outgoing transfers, unacknowledged chunks, remaining outgoing bytes, active incoming transfers, and lifetime metric snapshots. (Very useful for UI / live updates)
+
+```lua
+ChrononLabsStreamNet.ResetMetrics ()
+```
+
+`ResetMetrics` zeros the lifetime counters without touching active transfers.
 
 ## Transfer control
 
