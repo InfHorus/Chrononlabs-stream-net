@@ -141,24 +141,27 @@ config.FinishedControlResendInterval   = config.FinishedControlResendInterval or
 config.PriorityAgingInterval           = config.PriorityAgingInterval or 2
 config.QueueUntilClientReady           = config.QueueUntilClientReady or false
 config.RequestTimeout                  = config.RequestTimeout or 15
+config.HeaderRejectCancelBurst         = config.HeaderRejectCancelBurst or 8
+config.HeaderRejectCancelRate          = config.HeaderRejectCancelRate or 4
 config.Debug                           = config.Debug or false
 
 channelName = config.ChannelName
 
-library.Handlers           = library.Handlers or {}
-library.ReceivePolicies    = library.ReceivePolicies or {}
-library.ReceivePolicyState = library.ReceivePolicyState or {}
-library.OutgoingStates     = library.OutgoingStates or {}
-library.IncomingStates     = library.IncomingStates or {}
-library.FinishedIncoming   = library.FinishedIncoming or {}
-library.AckPending         = library.AckPending or {}
-library.NackPending        = library.NackPending or {}
-library.ReadyPlayers       = library.ReadyPlayers or {}
-library.PlayersByUserId    = library.PlayersByUserId or {}
-library.Profiles           = library.Profiles or {}
-library.NextTransferId     = library.NextTransferId or math.random (1, 2147483000)
-library.NextRequestId      = library.NextRequestId or math.random (1, 2147483000)
-library.PendingRequests    = library.PendingRequests or {}
+library.Handlers           	= library.Handlers or {}
+library.ReceivePolicies    	= library.ReceivePolicies or {}
+library.ReceivePolicyState 	= library.ReceivePolicyState or {}
+library.OutgoingStates     	= library.OutgoingStates or {}
+library.IncomingStates     	= library.IncomingStates or {}
+library.FinishedIncoming    = library.FinishedIncoming or {}
+library.HeaderRejectBuckets = library.HeaderRejectBuckets or {}
+library.AckPending          = library.AckPending or {}
+library.NackPending         = library.NackPending or {}
+library.ReadyPlayers        = library.ReadyPlayers or {}
+library.PlayersByUserId     = library.PlayersByUserId or {}
+library.Profiles            = library.Profiles or {}
+library.NextTransferId     	= library.NextTransferId or math.random (1, 2147483000)
+library.NextRequestId      	= library.NextRequestId or math.random (1, 2147483000)
+library.PendingRequests    	= library.PendingRequests or {}
 
 -- Auto-refresh support just in case.
 library.IncomingCounts = {}
@@ -1494,8 +1497,10 @@ end
 
 local function sendInternalArguments (name, peer, options, ...)
 	local payload = encodeArguments (1, ...)
+	local id, result = enqueueTransfer (name, peer, modeArguments, payload, options)
 
-	return enqueueTransfer (name, peer, modeArguments, payload, options)
+	if not id then return false, result end
+	return id
 end
 
 local function sendInternalResponse (peer, requestId, ok, ...)
@@ -1690,6 +1695,41 @@ local function sendCancel (peer, transferId, reason)
 	sendCurrentPacket (peer)
 end
 
+local function canSendHeaderRejectCancel (key, currentTime)
+	local burst = tonumber (config.HeaderRejectCancelBurst) or 0
+	local rate  = mathMax (0, tonumber (config.HeaderRejectCancelRate) or 0)
+
+	if burst <= 0 then return false end
+
+	local bucket = library.HeaderRejectBuckets [key]
+
+	if not bucket then
+		bucket = {
+			Tokens     = burst,
+			LastRefill = currentTime
+		}
+
+		library.HeaderRejectBuckets [key] = bucket
+	end
+
+	local elapsed = mathMax (0, currentTime - (bucket.LastRefill or currentTime))
+	bucket.Tokens = mathMin (burst, (bucket.Tokens or burst) + elapsed * rate)
+	bucket.LastRefill = currentTime
+
+	if bucket.Tokens < 1 then
+		return false
+	end
+
+	bucket.Tokens = bucket.Tokens - 1
+	return true
+end
+
+local function sendHeaderRejectCancel (peer, key, transferId, reason, currentTime)
+	if canSendHeaderRejectCancel (key, currentTime) then
+		sendCancel (peer, transferId, reason)
+	end
+end
+
 local function sendComplete (peer, transferId, ok, reason)
 	if SERVER and not isPlayerValue (peer) then return end
 
@@ -1698,6 +1738,41 @@ local function sendComplete (peer, transferId, ok, reason)
 	netWriteBool (ok == true)
 	netWriteString (tostring (reason or ""))
 	sendCurrentPacket (peer)
+end
+
+local function snapshotTransfer (transfer)
+	if not transfer then return nil end
+
+	local totalChunks = mathMax (1, transfer.TotalChunks or 1)
+	local ackCount    = transfer.AckCount or 0
+	local chunkSize   = transfer.ChunkSize or 0
+	local packedSize  = transfer.PackedSize or 0
+
+	return {
+		Id              = transfer.Id,
+		Peer            = transfer.Peer,
+		Name            = transfer.Name,
+		Mode            = transfer.Mode,
+		Compressed      = transfer.Compressed,
+		RawSize         = transfer.RawSize,
+		PackedSize      = transfer.PackedSize,
+		TotalChunks     = transfer.TotalChunks,
+		ChunkSize       = transfer.ChunkSize,
+		AckCount        = transfer.AckCount,
+		InFlightCount   = transfer.InFlightCount,
+		Window          = transfer.Window,
+		CreatedAt       = transfer.CreatedAt,
+		LastProgress    = transfer.LastProgress,
+		Done            = transfer.Done == true,
+		Priority        = transfer.Priority,
+		PriorityName    = transfer.PriorityName,
+		Timeout         = transfer.Timeout,
+		RetryInterval   = transfer.RetryInterval,
+		MaximumRetries  = transfer.MaximumRetries,
+		ReliableData    = transfer.ReliableData == true,
+		Progress        = ackCount / totalChunks,
+		AckedBytes      = mathMin (packedSize, ackCount * chunkSize)
+	}
 end
 
 local function emitProgress (transfer, currentTime, force)
@@ -1711,7 +1786,7 @@ local function emitProgress (transfer, currentTime, force)
 	transfer.LastProgressCallback = currentTime
 	transfer.LastProgressAckCount = transfer.AckCount
 
-	local callbackOk, callbackError = pcall (transfer.ProgressCallback, transfer)
+	local callbackOk, callbackError = pcall (transfer.ProgressCallback, snapshotTransfer (transfer))
 
 	if not callbackOk then
 		ErrorNoHalt ("(ChrononLabs-StreamNet): OnProgress error: " .. tostring (callbackError) .. ". Fix the OnProgress callback for this transfer.\n")
@@ -1734,7 +1809,7 @@ local function completeTransfer (state, transfer, ok, reason)
 	emitProgress (transfer, now (), true)
 
 	if transfer.Callback then
-		local callbackOk, callbackError = pcall (transfer.Callback, ok, reason or "", transfer)
+		local callbackOk, callbackError = pcall (transfer.Callback, ok, reason or "", snapshotTransfer (transfer))
 
 		if not callbackOk then
 			ErrorNoHalt ("(ChrononLabs-StreamNet): OnComplete error: " .. tostring (callbackError) .. ". Fix the OnComplete callback for this transfer.\n")
@@ -2146,7 +2221,7 @@ local function onHeaderPacket (peer)
 
 		return
 	elseif finished then
-		sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Metadata mismatch. Make sure transfer IDs are not reused with different metadata.")
+		sendHeaderRejectCancel (peer, key, transferId, "(ChrononLabs-StreamNet): Metadata mismatch. Make sure transfer IDs are not reused with different metadata.", currentTime)
 
 		return
 	end
@@ -2165,46 +2240,46 @@ local function onHeaderPacket (peer)
 	end
 
 	if not library.Handlers [messageLowerName] then
-		sendCancel (peer, transferId, "(ChrononLabs-StreamNet): No receiver registered for this message.")
+		sendHeaderRejectCancel (peer, key, transferId, "(ChrononLabs-StreamNet): No receiver registered for this message.", currentTime)
 
 		return
 	end
 
 	if (library.IncomingCounts [key] or 0) >= config.MaximumIncomingTransfersPerPeer then
-		sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Too many incoming transfers. Increase MaximumIncomingTransfersPerPeer or send fewer concurrent transfers.")
+		sendHeaderRejectCancel (peer, key, transferId, "(ChrononLabs-StreamNet): Too many incoming transfers. Increase MaximumIncomingTransfersPerPeer or send fewer concurrent transfers.", currentTime)
 		return
 	end
 
 	local maximumIncomingBytes = tonumber (config.MaximumIncomingBytesPerPeer)
 
 	if maximumIncomingBytes and maximumIncomingBytes > 0 and (library.IncomingBytes [key] or 0) + packedSize > maximumIncomingBytes then
-		sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Too much incoming data in flight. Increase MaximumIncomingBytesPerPeer or wait for active transfers to finish.")
+		sendHeaderRejectCancel (peer, key, transferId, "(ChrononLabs-StreamNet): Too much incoming data in flight. Increase MaximumIncomingBytesPerPeer or wait for active transfers to finish.", currentTime)
 		return
 	end
 
 	if policy then
 		if (SERVER and policy.Direction == "server_to_client") or (CLIENT and policy.Direction == "client_to_server") then
-			sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy direction rejected this transfer. Verify the message Direction matches the sender side.")
+			sendHeaderRejectCancel (peer, key, transferId, "(ChrononLabs-StreamNet): Receive policy direction rejected this transfer. Verify the message Direction matches the sender side.", currentTime)
 			return
 		end
 
 		if SERVER and policy.RequireReady and isPlayerValue (peer) and library.ReadyPlayers [peer:UserID ()] ~= true then
-			sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy requires the client to be ready. Wait until the client finishes joining before sending.")
+			sendHeaderRejectCancel (peer, key, transferId, "(ChrononLabs-StreamNet): Receive policy requires the client to be ready. Wait until the client finishes joining before sending.", currentTime)
 			return
 		end
 
 		if policy.MaxBytes and rawSize > policy.MaxBytes then
-			sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy byte limit exceeded. Increase MaxBytes or send less data.")
+			sendHeaderRejectCancel (peer, key, transferId, "(ChrononLabs-StreamNet): Receive policy byte limit exceeded. Increase MaxBytes or send less data.", currentTime)
 			return
 		end
 
 		if policy.MaxInFlight and bucket and countIncomingByName (bucket, messageLowerName) >= policy.MaxInFlight then
-			sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy in-flight limit exceeded. Increase MaxInFlight or wait for the previous transfer to finish.")
+			sendHeaderRejectCancel (peer, key, transferId, "(ChrononLabs-StreamNet): Receive policy in-flight limit exceeded. Increase MaxInFlight or wait for the previous transfer to finish.", currentTime)
 			return
 		end
 
 		if policyCooldownActive (key, messageLowerName, policy, currentTime) then
-			sendCancel (peer, transferId, "(ChrononLabs-StreamNet): Receive policy cooldown active. Wait before sending this message again.")
+			sendHeaderRejectCancel (peer, key, transferId, "(ChrononLabs-StreamNet): Receive policy cooldown active. Wait before sending this message again.", currentTime)
 			return
 		end
 	end
@@ -2599,8 +2674,10 @@ function library.Send (name, ...)
 	end
 
 	local payload = encodeArguments (1, ...)
+	local id, result = enqueueTransfer (name, nil, modeArguments, payload, nil)
 
-	return enqueueTransfer (name, nil, modeArguments, payload, nil)
+	if not id then return false, result end
+	return id
 end
 
 function library.SendEx (name, ...)
@@ -2617,8 +2694,10 @@ function library.SendEx (name, ...)
 
 	local options = resolveProfileOptions (select (1, ...)) or {}
 	local payload = encodeArguments (2, ...)
+	local id, result = enqueueTransfer (name, nil, modeArguments, payload, options)
 
-	return enqueueTransfer (name, nil, modeArguments, payload, options)
+	if not id then return false, result end
+	return id
 end
 
 function library.Request (name, ...)
@@ -2687,8 +2766,10 @@ function library.SendRaw (name, ...)
 
 	local bytes   = select (1, ...) or ""
 	local options = resolveProfileOptions (select (2, ...)) or {}
+	local id, result = enqueueTransfer (name, nil, modeRaw, bytes, options)
 
-	return enqueueTransfer (name, nil, modeRaw, bytes, options)
+	if not id then return false, result end
+	return id
 end
 
 function library.Broadcast (name, ...)
@@ -2711,7 +2792,8 @@ function library.GetTransfer (transferId, peer)
 
 	local transfer = findOutgoingTransfer (transferId, peer)
 
-	return transfer
+	if not transfer then return nil end
+	return snapshotTransfer (transfer)
 end
 
 function library.GetTransfers (peer)
@@ -2726,9 +2808,13 @@ function library.GetTransfers (peer)
 	end
 
 	local output = {}
+	local outputIndex = 1
 
 	for transferIndex, transfer in ipairs (state.Queue) do
-		output [transferIndex] = transfer
+		if not transfer.Done then
+			output [outputIndex] = snapshotTransfer (transfer)
+			outputIndex = outputIndex + 1
+		end
 	end
 
 	return output
@@ -2765,7 +2851,7 @@ function library.Cancel (transferId, ...)
 	sendCancel (transfer.Peer, transfer.Id, reason)
 	completeTransfer (state, transfer, false, reason)
 
-	return true, transfer
+	return true, snapshotTransfer (transfer)
 end
 
 function library.SetConfig (key, value)
@@ -2847,6 +2933,7 @@ if SERVER then
 		library.OutgoingStates [key]     = nil
 		library.IncomingStates [key]     = nil
 		library.FinishedIncoming [key]   = nil
+		library.HeaderRejectBuckets [key] = nil
 		library.IncomingCounts [key]     = nil
 		library.IncomingBytes [key]      = nil
 		library.FinishedCounts [key]     = nil
