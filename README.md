@@ -25,7 +25,7 @@ Instead of writing a custom chunking and retry system in every project, you get 
 ## Main advantages
 
 - Single-file library that can live in one shared autorun file.
-- Unified API with `Receive`, `Send`, `SendEx`, `SendRaw`, `Broadcast`, `BroadcastEx`, `Request`, and `Respond`.
+- Unified API with `Receive`, `Send`, `SendEx`, `SendRaw`, `Broadcast`, `BroadcastEx`, `Request`, `Respond`, and replicated values.
 - Two-way networking for client to server and server to client messages.
 - Works for small addon messages, large payloads, and file-like transfers.
 - Cleaner structure than manually managing `net.Start`, `net.Write*`, and `net.Receive`.
@@ -48,6 +48,7 @@ Instead of writing a custom chunking and retry system in every project, you get 
 - Completion callbacks with `OnComplete`.
 - Progress callbacks for outgoing transfers with `OnProgress` and `ProgressInterval`.
 - Request/response helpers with correlation, timeout, duplicate-reply protection, and fast failure.
+- Replicated values with late-join sync for large config/state tables.
 - Outgoing transfer lookup with `GetTransfer` and `GetTransfers`.
 - Outgoing transfer cancellation with `Cancel`.
 - Runtime stats with `GetStats`, `ResetMetrics`, and `chrononlabs_streamnet_stats`.
@@ -261,6 +262,8 @@ Use `BroadcastEx` when a broadcast needs options, profiles, or `OnAllComplete`.
 
 Use `Request` and `Respond` when one side needs to ask one peer for a result.
 
+Use `Replicate` when the server owns a value that current and future clients should cache.
+
 Use a receive policy when the message needs safety limits.
 
 Use `OnProgress` with `Cancel` when a transfer should be shown in a UI or stopped by the user.
@@ -275,6 +278,25 @@ ChrononLabsStreamNet.SendEx ("BigConfig", players, {
     end
 }, configTable)
 ```
+
+## Replicated values
+
+Replicated values are server-owned cached values for clients, useful for config, shop data, rules, HUD state, or other large tables that late joiners must receive.
+
+```lua
+-- Server
+ChrononLabsStreamNet.Replicate ("ServerConfig", configTable)
+ChrononLabsStreamNet.ClearReplicated ("ServerConfig")
+
+-- Client
+ChrononLabsStreamNet.OnReplicated ("ServerConfig", function (value, name, cleared)
+    print ("Config changed:", name, cleared)
+end)
+
+local config = ChrononLabsStreamNet.GetReplicated ("ServerConfig", {})
+```
+
+Calling `Replicate(name, nil)` clears that replicated value. `OnReplicated` fires on initial delivery and later updates. If a transfer ultimately fails, the client may stay stale until the server calls `Replicate` again.
 
 ## Profiles
 

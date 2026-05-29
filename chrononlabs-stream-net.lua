@@ -159,6 +159,8 @@ library.NackPending         = library.NackPending or {}
 library.ReadyPlayers        = library.ReadyPlayers or {}
 library.PlayersByUserId     = library.PlayersByUserId or {}
 library.Profiles            = library.Profiles or {}
+library.ReplicatedValues    = library.ReplicatedValues or {}
+library.ReplicatedCallbacks = library.ReplicatedCallbacks or {}
 library.NextTransferId     	= library.NextTransferId or math.random (1, 2147483000)
 library.NextRequestId      	= library.NextRequestId or math.random (1, 2147483000)
 library.PendingRequests    	= library.PendingRequests or {}
@@ -1547,6 +1549,33 @@ local function registerInternalReceive (name, policy, callback)
 	library.ReceivePolicies [messageLowerName] = normalizeReceivePolicy (policy)
 end
 
+registerInternalReceive ((internalNamePrefix .. "replicate"), { Direction = "server_to_client" }, function (action, name, value)
+	if SERVER then return end
+	if type (name) ~= "string" or name == "" then return end
+
+	local key = lowerName (name)
+	local cleared = action == "clear"
+
+	if action == "set" then
+		library.ReplicatedValues [key] = value
+	elseif action == "clear" then
+		library.ReplicatedValues [key] = nil
+	else
+		return
+	end
+
+	local callbacks = library.ReplicatedCallbacks [key]
+	if not callbacks then return end
+
+	for callbackIndex, callback in ipairs (callbacks) do
+		local callbackOk, callbackError = pcall (callback, cleared and nil or value, name, cleared)
+
+		if not callbackOk then
+			ErrorNoHalt ("(ChrononLabs-StreamNet): OnReplicated error: " .. tostring (callbackError) .. ". Fix the OnReplicated callback for " .. tostring (name) .. ".\n")
+		end
+	end
+end)
+
 local function finishPendingRequest (requestId, ok, ...)
 	local pending = library.PendingRequests [requestId]
 
@@ -2645,6 +2674,16 @@ end
 local function onReadyPacket (peer)
 	if SERVER and isPlayerValue (peer) then
 		library.ReadyPlayers [peer:UserID ()] = true
+
+		for key, replicated in pairs (library.ReplicatedValues) do
+			local encodeOk, payload = pcall (encodeArguments, 1, "set", replicated.Name, replicated.Value)
+
+			if encodeOk then
+				sendToTargets ((internalNamePrefix .. "replicate"), peer, modeArguments, payload, nil)
+			else
+				ErrorNoHalt ("(ChrononLabs-StreamNet): Replicated value could not be encoded for " .. tostring (replicated.Name) .. ": " .. tostring (payload) .. "\n")
+			end
+		end
 	end
 end
 
@@ -2973,6 +3012,148 @@ function library.BroadcastEx (name, ...)
 	local payload = encodeArguments (2, ...)
 
 	return sendToTargets (name, nil, modeArguments, payload, options)
+end
+
+function library.Replicate (name, value)
+	if not SERVER then
+		return false, "(ChrononLabs-StreamNet): Replicate is server only. Use GetReplicated or OnReplicated on the client."
+	end
+
+	if type (name) ~= "string" or name == "" then
+		return false, "(ChrononLabs-StreamNet): Replicated name must be a non-empty string."
+	end
+
+	local valid, errorMessage = validatePublicMessageName (name)
+	if not valid then return false, errorMessage end
+
+	if value == nil then
+		return library.ClearReplicated (name)
+	end
+
+	local encodeOk, payload = pcall (encodeArguments, 1, "set", name, value)
+
+	if not encodeOk then
+		return false, "(ChrononLabs-StreamNet): Replicated value could not be encoded: " .. tostring (payload)
+	end
+
+	library.ReplicatedValues [lowerName (name)] = {
+		Name  = name,
+		Value = value
+	}
+
+	local targets = {}
+
+	for _, ply in playerIterator () do
+		if isPlayerValue (ply) and library.ReadyPlayers [ply:UserID ()] == true then
+			targets [#targets + 1] = ply
+		end
+	end
+
+	if #targets > 0 then
+		local id, result = sendToTargets ((internalNamePrefix .. "replicate"), targets, modeArguments, payload, nil)
+
+		if not id then
+			return false, result
+		end
+	end
+
+	return true
+end
+
+function library.ClearReplicated (name)
+	if not SERVER then
+		return false, "(ChrononLabs-StreamNet): ClearReplicated is server only. Use GetReplicated or OnReplicated on the client."
+	end
+
+	if type (name) ~= "string" or name == "" then
+		return false, "(ChrononLabs-StreamNet): Replicated name must be a non-empty string."
+	end
+
+	local valid, errorMessage = validatePublicMessageName (name)
+	if not valid then return false, errorMessage end
+
+	local key = lowerName (name)
+	local existed = library.ReplicatedValues [key] ~= nil
+
+	library.ReplicatedValues [key] = nil
+
+	if not existed then
+		return true
+	end
+
+	local encodeOk, payload = pcall (encodeArguments, 1, "clear", name)
+
+	if not encodeOk then
+		return false, "(ChrononLabs-StreamNet): Replicated clear could not be encoded: " .. tostring (payload)
+	end
+
+	local targets = {}
+
+	for _, ply in playerIterator () do
+		if isPlayerValue (ply) and library.ReadyPlayers [ply:UserID ()] == true then
+			targets [#targets + 1] = ply
+		end
+	end
+
+	if #targets > 0 then
+		local id, result = sendToTargets ((internalNamePrefix .. "replicate"), targets, modeArguments, payload, nil)
+
+		if not id then
+			return false, result
+		end
+	end
+
+	return true
+end
+
+function library.GetReplicated (name, defaultValue)
+	if type (name) ~= "string" or name == "" then
+		return defaultValue
+	end
+
+	local value = library.ReplicatedValues [lowerName (name)]
+
+	if SERVER and value ~= nil then
+		value = value.Value
+	end
+
+	if value == nil then
+		return defaultValue
+	end
+
+	return value
+end
+
+function library.OnReplicated (name, callback)
+	assert (type (name) == "string" and name ~= "", "(ChrononLabs-StreamNet): Replicated name must be a non-empty string.")
+	assert (type (callback) == "function", "(ChrononLabs-StreamNet): OnReplicated callback must be a function.")
+
+	local key = lowerName (name)
+	local callbacks = library.ReplicatedCallbacks [key]
+
+	if not callbacks then
+		callbacks = {}
+		library.ReplicatedCallbacks [key] = callbacks
+	end
+
+	for callbackIndex, existingCallback in ipairs (callbacks) do
+		if existingCallback == callback then
+			return library
+		end
+	end
+
+	callbacks [#callbacks + 1] = callback
+
+	if CLIENT and library.ReplicatedValues [key] ~= nil then
+		local value = library.ReplicatedValues [key]
+		local callbackOk, callbackError = pcall (callback, value, name, false)
+
+		if not callbackOk then
+			ErrorNoHalt ("(ChrononLabs-StreamNet): OnReplicated error: " .. tostring (callbackError) .. ". Fix the OnReplicated callback for " .. tostring (name) .. ".\n")
+		end
+	end
+
+	return library
 end
 
 function library.GetTransfer (transferId, peer)
