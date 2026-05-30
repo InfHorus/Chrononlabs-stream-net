@@ -2830,7 +2830,7 @@ local function findOutgoingTransfer (transferId, peer)
 	if transfer then return transfer, state end
 
 	for transferIndex, queuedTransfer in ipairs (state.Queue) do
-		if queuedTransfer.Id == transferId then
+		if not queuedTransfer.Done and queuedTransfer.Id == transferId then
 			return queuedTransfer, state
 		end
 	end
@@ -3248,12 +3248,11 @@ function library.GetStats ()
 	local incomingTransfers      = 0
 
 	for key, state in pairs (library.OutgoingStates) do
-		outgoingTransfers = outgoingTransfers + #state.Queue
-
 		for transferIndex, transfer in ipairs (state.Queue) do
-			outgoingUnackedChunks = outgoingUnackedChunks + mathMax (0, transfer.TotalChunks - transfer.AckCount)
-
 			if not transfer.Done then
+				outgoingTransfers = outgoingTransfers + 1
+				outgoingUnackedChunks = outgoingUnackedChunks + mathMax (0, transfer.TotalChunks - transfer.AckCount)
+
 				for sequence = 1, transfer.TotalChunks do
 					if not transfer.Acked [sequence] then
 						local startPosition = (sequence - 1) * transfer.ChunkSize + 1
