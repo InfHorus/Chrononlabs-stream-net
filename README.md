@@ -50,7 +50,7 @@ Instead of writing a custom chunking and retry system in every project, you get 
 - Request/response helpers with correlation, timeout, duplicate-reply protection, and fast failure.
 - Replicated values with late-join sync for large config/state tables.
 - Outgoing transfer lookup with `GetTransfer` and `GetTransfers`.
-- Outgoing transfer cancellation with `Cancel`.
+- Outgoing transfer cancellation with `Cancel` and `CancelAll`.
 - Runtime stats with `GetStats`, `ResetMetrics`, and `chrononlabs_streamnet_stats`.
 - Optional client-ready queueing with `QueueUntilClientReady`.
 - Helpful error messages that include short fixes when something is misconfigured.
@@ -266,7 +266,7 @@ Use `Replicate` when the server owns a value that current and future clients sho
 
 Use a receive policy when the message needs safety limits.
 
-Use `OnProgress` with `Cancel` when a transfer should be shown in a UI or stopped by the user.
+Use `OnProgress` with `Cancel` or `CancelAll` when transfers should be shown in a UI or stopped by the user.
 
 For server multi-target `SendEx` or `SendRaw` calls, `OnAllComplete` fires after every resolved target finishes:
 
@@ -504,12 +504,16 @@ local transfer = ChrononLabsStreamNet.GetTransfer (id, ply)
 local transfers = ChrononLabsStreamNet.GetTransfers (ply)
 
 ChrononLabsStreamNet.Cancel (id, ply, "(MyAddon): Download cancelled by user.")
+local cancelled = ChrononLabsStreamNet.CancelAll (ply, "(MyAddon): All downloads to this player cancelled.")
 ```
+
+`CancelAll` cancels every active outgoing ChrononLabs-StreamNet transfer for that peer and returns the count.
 
 On the client, drop the player argument of course:
 
 ```lua
 ChrononLabsStreamNet.Cancel (id, "(MyAddon): Upload cancelled by user.")
+local cancelled = ChrononLabsStreamNet.CancelAll ("(MyAddon): All uploads to the server cancelled.")
 ```
 
 ## Transfer priority

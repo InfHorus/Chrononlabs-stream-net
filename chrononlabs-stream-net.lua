@@ -3239,6 +3239,51 @@ function library.Cancel (transferId, ...)
 	return true, snapshotTransfer (transfer)
 end
 
+function library.CancelAll (...)
+	local peer
+	local reason
+
+	if SERVER then
+		peer   = select (1, ...)
+		reason = select (2, ...)
+	else
+		peer   = nil
+		reason = select (1, ...)
+	end
+
+	local state = readOutgoingState (peer)
+
+	if not state then
+		return 0
+	end
+
+	reason = tostring (reason or "")
+
+	if reason == "" then
+		reason = "(ChrononLabs-StreamNet): Transfers cancelled. CancelAll was called."
+	end
+
+	local pending = {}
+
+	for transferIndex, transfer in ipairs (state.Queue) do
+		if not transfer.Done then
+			pending [#pending + 1] = transfer
+		end
+	end
+
+	local cancelled = 0
+
+	for transferIndex, transfer in ipairs (pending) do
+		if not transfer.Done then
+			sendCancel (transfer.Peer, transfer.Id, reason)
+			completeTransfer (state, transfer, false, reason)
+			cancelled = cancelled + 1
+		end
+	end
+
+	return cancelled
+end
+
 function library.SetConfig (key, value)
 	config [key] = value
 
