@@ -432,7 +432,7 @@ ChrononLabsStreamNet.SendEx ("LargeInventorySync", ply, {
     ChunkSize = 16384,
     BytesPerSecond = 96 * 1024,
     BurstBytes = 64 * 1024,
-    Window = 6,
+    Window = 12,
     RetryInterval = 0.75,
     Timeout = 20,
     MaximumRetries = 16,
@@ -456,7 +456,7 @@ You can adjust global settings before heavy use:
 ChrononLabsStreamNet.SetConfig ("ChunkSize", 16384)
 ChrononLabsStreamNet.SetConfig ("BytesPerSecond", 98304)
 ChrononLabsStreamNet.SetConfig ("BurstBytes", 65536)
-ChrononLabsStreamNet.SetConfig ("Window", 6)
+ChrononLabsStreamNet.SetConfig ("Window", 12)
 ChrononLabsStreamNet.SetConfig ("Timeout", 20)
 ChrononLabsStreamNet.SetConfig ("MaximumRetries", 16)
 ChrononLabsStreamNet.SetConfig ("MaximumIncomingBytesPerPeer", 32 * 1024 * 1024)
@@ -623,7 +623,7 @@ hook.Add ("PlayerInitialSpawn", "ChrononLabsStreamNetExampleSettings", function 
             RetryInterval = 0.75,
             Timeout = 20,
             MaximumRetries = 16,
-            Window = 6,
+            Window = 12,
             ReliableData = false,
 
             OnComplete = function (ok, reason, transfer)
@@ -886,7 +886,7 @@ local options = {
     MaximumRetries = 20,
 
     -- Maximum number of unacknowledged chunks in flight.
-    Window = 6,
+    Window = 12,
 
     -- false means data chunks are sent using unreliable mode and repaired by ACK/NACK.
     -- true means data chunks are sent reliable, which is not recommended for very large transfers.
@@ -954,7 +954,7 @@ ChrononLabsStreamNet.SetConfig ("MaximumNetMessageBytes", 60000)
 ChrononLabsStreamNet.SetConfig ("ChunkSize", 16384)
 ChrononLabsStreamNet.SetConfig ("BytesPerSecond", 98304)
 ChrononLabsStreamNet.SetConfig ("BurstBytes", 65536)
-ChrononLabsStreamNet.SetConfig ("Window", 6)
+ChrononLabsStreamNet.SetConfig ("Window", 12)
 ChrononLabsStreamNet.SetConfig ("RetryInterval", 0.75)
 ChrononLabsStreamNet.SetConfig ("Timeout", 20)
 ChrononLabsStreamNet.SetConfig ("MaximumRetries", 16)
@@ -998,7 +998,7 @@ concommand.Add ("clsnet_bonus_send_big", function (ply)
             RetryInterval = 0.75,
             Timeout = 25,
             MaximumRetries = 20,
-            Window = 6,
+            Window = 12,
             ReliableData = false,
 
             OnComplete = function (ok, reason, transfer)

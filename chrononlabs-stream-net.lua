@@ -119,7 +119,7 @@ config.MaximumNetMessageBytes          = config.MaximumNetMessageBytes or 60000
 config.ChunkSize                       = config.ChunkSize or 16384
 config.BytesPerSecond                  = config.BytesPerSecond or 98304
 config.BurstBytes                      = config.BurstBytes or 65536
-config.Window                          = config.Window or 6
+config.Window                          = config.Window or 12
 config.RetryInterval                   = config.RetryInterval or 0.75
 config.Timeout                         = config.Timeout or 20
 config.MaximumRetries                  = config.MaximumRetries or 16
@@ -2517,6 +2517,7 @@ local function onHeaderPacket (peer)
 		ReceivedBytes = 0,
 		CreatedAt     = currentTime,
 		UpdatedAt     = currentTime,
+		HighestReceivedSequence = 0,
 		NextNackSequence = 1,
 		NextNack         = currentTime + config.NackInterval
 	}
@@ -2557,6 +2558,7 @@ local function onDataPacket (peer)
 	end
 
 	if sequence < 1 or sequence > incoming.TotalChunks then return end
+	incoming.HighestReceivedSequence = mathMax (incoming.HighestReceivedSequence or 0, sequence)
 
 	if incoming.PackedSize == 0 then
 		if incoming.TotalChunks ~= 1 or sequence ~= 1 or chunkLength ~= 0 then return end
@@ -2768,22 +2770,31 @@ local function flushIncomingMaintenance (currentTime)
 				if currentTime - incoming.UpdatedAt > config.Timeout then
 					failIncoming (peer, bucket, incoming, "(ChrononLabs-StreamNet): Incoming timeout. Increase Timeout, reduce payload size, or lower pacing pressure.")
 				elseif currentTime >= incoming.NextNack and incoming.Received < incoming.TotalChunks then
-					local sequence = incoming.NextNackSequence or 1
-					local checked  = 0
-					local emitted  = 0
-					local nackBatch = mathMax (1, tonumber (config.NackBatch) or 1)
+					local highest = incoming.HighestReceivedSequence or 0
 
-					while checked < incoming.TotalChunks and emitted < nackBatch do
-						if not incoming.Chunks [sequence] then
-							queueNack (peer, transferId, sequence)
-							emitted = emitted + 1
+					if highest > 0 then
+						local sequence = incoming.NextNackSequence or 1
+						local checked  = 0
+						local emitted  = 0
+						local nackBatch = mathMax (1, tonumber (config.NackBatch) or 1)
+
+						if sequence > highest then
+							sequence = 1
 						end
 
-						sequence = sequence % incoming.TotalChunks + 1
-						checked  = checked + 1
+						while checked < highest and emitted < nackBatch do
+							if not incoming.Chunks [sequence] then
+								queueNack (peer, transferId, sequence)
+								emitted = emitted + 1
+							end
+
+							sequence = sequence % highest + 1
+							checked  = checked + 1
+						end
+
+						incoming.NextNackSequence = sequence
 					end
 
-					incoming.NextNackSequence = sequence
 					incoming.NextNack = currentTime + config.NackInterval
 				end
 			end
@@ -3443,7 +3454,7 @@ end)
 			ChrononLabsStreamNet.SendRaw ("MyAddon.Blob", ply, payload, {
 				ChunkSize  = 16384,
 				Compress   = true,
-				Window     = 6,
+				Window     = 12,
 				OnComplete = function (ok, reason, transfer)
 					print ("blob to " .. transfer.Peer:Nick () .. ":", ok, reason,
 						transfer.RawSize .. "B -> " .. transfer.PackedSize .. "B")
