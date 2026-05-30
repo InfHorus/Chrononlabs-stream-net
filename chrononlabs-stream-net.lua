@@ -683,6 +683,10 @@ readValue = function (reader, depth)
 			local pairValue = readValue (reader, depth + 1)
 
 			if key ~= nil then
+				if type (key) == "number" and key ~= key then
+					error ("(ChrononLabs-StreamNet): Decode table key is NaN. Check for corrupted payloads or mismatched serializer data.")
+				end
+
 				output [key] = pairValue
 			end
 		end
