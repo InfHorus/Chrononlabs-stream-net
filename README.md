@@ -25,7 +25,7 @@ Instead of writing a custom chunking and retry system in every project, you get 
 ## Main advantages
 
 - Single-file library that can live in one shared autorun file.
-- Unified API with `Receive`, `Send`, `SendEx`, `SendRaw`, `Broadcast`, `BroadcastEx`, `Request`, `Respond`, and replicated values.
+- Unified API with `Receive`, `Send`, `SendEx`, `SendRaw`, `Broadcast`, `BroadcastEx`, `Request`, `Respond`, `Replicate`, `OnReplicated`, and `GetReplicated`.
 - Two-way networking for client to server and server to client messages.
 - Works for small addon messages, large payloads, and file-like transfers.
 - Cleaner structure than manually managing `net.Start`, `net.Write*`, and `net.Receive`.
@@ -48,7 +48,7 @@ Instead of writing a custom chunking and retry system in every project, you get 
 - Completion callbacks with `OnComplete`.
 - Progress callbacks for outgoing transfers with `OnProgress` and `ProgressInterval`.
 - Request/response helpers with correlation, timeout, duplicate-reply protection, and fast failure.
-- Replicated values with late-join sync for large config/state tables.
+- Replicated values with `Replicate`, `OnReplicated`, `GetReplicated`, and late-join sync for large config/state tables.
 - Outgoing transfer lookup with `GetTransfer` and `GetTransfers`.
 - Outgoing transfer cancellation with `Cancel` and `CancelAll`.
 - Runtime stats with `GetStats`, `ResetMetrics`, and `chrononlabs_streamnet_stats`.
@@ -262,7 +262,7 @@ Use `BroadcastEx` when a broadcast needs options, profiles, or `OnAllComplete`.
 
 Use `Request` and `Respond` when one side needs to ask one peer for a result.
 
-Use `Replicate` when the server owns a value that current and future clients should cache.
+Use `Replicate`, `OnReplicated`, and `GetReplicated` when the server owns a value that current and future clients should cache.
 
 Use a receive policy when the message needs safety limits.
 
