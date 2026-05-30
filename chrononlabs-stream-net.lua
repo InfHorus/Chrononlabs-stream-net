@@ -2673,7 +2673,13 @@ end
 
 local function onReadyPacket (peer)
 	if SERVER and isPlayerValue (peer) then
-		library.ReadyPlayers [peer:UserID ()] = true
+		local userId = peer:UserID ()
+
+		if library.ReadyPlayers [userId] then
+			return
+		end
+
+		library.ReadyPlayers [userId] = true
 
 		for key, replicated in pairs (library.ReplicatedValues) do
 			local encodeOk, payload = pcall (encodeArguments, 1, "set", replicated.Name, replicated.Value)
