@@ -704,6 +704,10 @@ local function encodeArguments (startIndex, ...)
 		argumentCount = 0
 	end
 
+	if argumentCount > 65535 then
+		error ("(ChrononLabs-StreamNet): Too many arguments. Send 65535 arguments or fewer.")
+	end
+
 	local output = { Position = 0 }
 	writeUnsigned8 (output, serializerVersion)
 	writeUnsigned16 (output, argumentCount)
